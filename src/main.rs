@@ -156,8 +156,18 @@ impl<'a> Lexer<'a> {
     }
 
     fn skip_ws(&mut self) {
-        while self.pos < self.chars.len() && self.chars[self.pos].is_whitespace() {
-            self.pos += 1;
+        loop {
+            while self.pos < self.chars.len() && self.chars[self.pos].is_whitespace() {
+                self.pos += 1;
+            }
+            if self.pos + 1 < self.chars.len() && self.chars[self.pos] == '/' && self.chars[self.pos + 1] == '/' {
+                self.pos += 2;
+                while self.pos < self.chars.len() && self.chars[self.pos] != '\n' {
+                    self.pos += 1;
+                }
+            } else {
+                break;
+            }
         }
     }
 
