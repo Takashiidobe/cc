@@ -43,7 +43,7 @@ pub struct Parser {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct Program(Stmt);
+pub struct Program(pub Stmt);
 
 impl Parser {
     pub fn new(source: Vec<char>, tokens: Vec<Token>) -> Self {
@@ -78,7 +78,7 @@ impl Parser {
         // match lbrace
         self.skip(&TokenKind::LBrace);
         // get all statements
-        self.stmts();
+        let stmts = self.stmts();
         // match rbrace
         self.skip(&TokenKind::RBrace);
 
@@ -87,7 +87,7 @@ impl Parser {
         let source: String = self.source[start..end].iter().collect();
 
         Stmt {
-            kind: StmtKind::FnDecl("main".to_string(), vec![]),
+            kind: StmtKind::FnDecl("main".to_string(), stmts),
             start,
             end,
             source,
@@ -124,7 +124,7 @@ impl Parser {
                     r#type: Type::Int,
                 }
             }
-            _ => panic!("Expected expression"),
+            kind => panic!("Expected return, got {kind:?}"),
         };
 
         self.skip(&TokenKind::Semicolon);
@@ -150,7 +150,7 @@ impl Parser {
                     r#type: Type::Int,
                 }
             }
-            _ => panic!("Expected expression"),
+            kind => panic!("Expected expression, found {kind:?}"),
         }
     }
 

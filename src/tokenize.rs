@@ -55,10 +55,10 @@ pub enum TokenKind {
     #[token("return")]
     Return,
 
-    #[regex(r"[1-9][0-9]*", |lex| lex.slice().parse::<i64>().unwrap(), priority = 5)]
+    #[regex(r"(0|[1-9][0-9]*)", |lex| lex.slice().parse::<i64>().unwrap(), priority = 5)]
     Integer(i64),
 
-    #[regex(r"[1-9][0-9]*\.[0-9]*", |lex| lex.slice().parse::<f64>().unwrap(), priority = 4)]
+    #[regex(r"(0|[1-9][0-9]*)\.[0-9]*", |lex| lex.slice().parse::<f64>().unwrap(), priority = 4)]
     Float(f64),
 
     #[regex(r#"\w*"#, |lex| lex.slice().to_owned(), priority = 2)]
@@ -66,6 +66,9 @@ pub enum TokenKind {
 
     #[regex(r#""\w*""#, |lex| lex.slice().to_owned())]
     String(String),
+
+    #[regex(r#"//.*"#, |lex| lex.slice().to_owned(), priority = 4)]
+    Comment(String),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -82,6 +85,12 @@ pub fn tokenize(source: &str) -> anyhow::Result<Vec<Token>> {
 
     while let Some(t) = lexer.next() {
         let kind = t.map_err(|e| anyhow::anyhow!("Error: {e:?}"))?;
+
+        // ignore all comments
+        if matches!(kind, TokenKind::Comment(_)) {
+            continue;
+        }
+
         let (start, end) = (lexer.span().start, lexer.span().end);
         let source = lexer.slice().to_string();
         tokens.push(Token {
