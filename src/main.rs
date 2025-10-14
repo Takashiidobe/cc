@@ -1,7 +1,7 @@
 use std::fs;
 
 use anyhow::Error;
-use cc::{cli::Args, codegen::Codegen, parse::Parser, tokenize::tokenize};
+use cc::{cli::Args, codegen::Codegen, parse::Parser, tacky::TackyGen, tokenize::tokenize};
 use clap::Parser as _;
 
 fn main() -> anyhow::Result<(), Error> {
@@ -33,8 +33,10 @@ fn main() -> anyhow::Result<(), Error> {
         let mut parser = Parser::new(source.chars().collect(), tokens);
         let ast = parser.parse();
         dbg!(&ast);
-        let mut codegen = Codegen::new(source.chars().collect(), ast, std::io::stdout());
-        codegen.program()?;
+        let mut tacky = TackyGen::new(ast);
+        let tacky_instructions = tacky.codegen();
+        let mut codegen = Codegen::new(std::io::stdout());
+        codegen.lower(&tacky_instructions)?;
     }
     Ok(())
 }

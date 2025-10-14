@@ -1,109 +1,102 @@
-use std::io::Write;
+use std::collections::HashMap;
+use std::io::{Result, Write};
 
-use anyhow::Result;
-
-use crate::parse::{Expr, ExprKind, Program, Stmt, StmtKind};
+use crate::tacky::{BinaryOp, TackyInstr, TackyValue, UnaryOp};
 
 pub struct Codegen<W: Write> {
-    pub source: Vec<char>,
-    pub program: Program,
-    pub depth: i64,
     pub buf: W,
+    stack_map: HashMap<String, i64>,
+    next_offset: i64,
 }
 
 impl<W: Write> Codegen<W> {
-    pub fn new(source: Vec<char>, program: Program, buf: W) -> Self {
+    pub fn new(buf: W) -> Self {
         Self {
-            source,
-            program,
-            depth: 0,
             buf,
+            stack_map: HashMap::new(),
+            next_offset: 0,
         }
     }
-    pub fn program(&mut self) -> Result<()> {
-        self.stmt(&self.program.0.clone())?;
-        Ok(())
+
+    fn stack_slot(&mut self, var: &str) -> i64 {
+        *self.stack_map.entry(var.to_string()).or_insert_with(|| {
+            self.next_offset -= 8;
+            self.next_offset
+        })
     }
 
-    fn push(&mut self) -> Result<()> {
-        writeln!(self.buf, "  push %rax")?;
-        self.depth += 1;
-        Ok(())
-    }
-
-    fn pop(&mut self, arg: &str) -> Result<()> {
-        writeln!(self.buf, "  pop {}", arg)?;
-        self.depth -= 1;
-        Ok(())
-    }
-
-    fn stmt(&mut self, stmt: &Stmt) -> Result<()> {
-        match &stmt.kind {
-            StmtKind::Expr(expr) => {
-                self.expr(expr)?;
-            }
-            StmtKind::Return(expr) => {
-                self.expr(expr)?;
-                writeln!(self.buf, "  ret")?;
-            }
-            StmtKind::Block(stmts) => {
-                for stmt in stmts {
-                    self.stmt(stmt)?;
-                }
-            }
-            StmtKind::FnDecl(name, stmts) => {
-                writeln!(self.buf, "  .globl {name}")?;
-                writeln!(self.buf, "{name}:")?;
-                for stmt in stmts {
-                    self.stmt(stmt)?;
-                }
-                writeln!(self.buf, "  ret")?;
+    fn emit_load(&mut self, val: &TackyValue) -> Result<()> {
+        match val {
+            TackyValue::Integer(i) => writeln!(self.buf, "  mov ${}, %rax", i),
+            TackyValue::Var(v) => {
+                let off = self.stack_slot(v);
+                writeln!(self.buf, "  mov {}(%rbp), %rax", off)
             }
         }
+    }
+
+    fn emit_store(&mut self, var: &str) -> Result<()> {
+        let off = self.stack_slot(var);
+        writeln!(self.buf, "  mov %rax, {}(%rbp)", off)
+    }
+
+    pub fn emit_prologue(&mut self, name: &str) -> Result<()> {
+        writeln!(self.buf, ".globl {}", name)?;
+        writeln!(self.buf, "{}:", name)?;
+        writeln!(self.buf, "  push %rbp")?;
+        writeln!(self.buf, "  mov %rsp, %rbp")?;
         Ok(())
     }
 
-    fn expr(&mut self, expr: &Expr) -> Result<()> {
-        match expr.kind {
-            ExprKind::Integer(val) => {
-                writeln!(self.buf, "  mov ${}, %rax", val)?;
-            }
-            ExprKind::Neg(ref rhs) => {
-                self.expr(rhs)?;
-                writeln!(self.buf, "  neg %rax")?;
-            }
-            ExprKind::BitNot(ref rhs) => {
-                self.expr(rhs)?;
-                writeln!(self.buf, "  not %rax")?;
-            }
-            ExprKind::Add(ref lhs, ref rhs) => {
-                self.expr(rhs)?;
-                self.push()?;
-                self.expr(lhs)?;
-                self.pop("%rdi")?;
-                writeln!(self.buf, "  add %rdi, %rax")?;
-            }
-            ExprKind::Sub(ref lhs, ref rhs) => {
-                self.expr(rhs)?;
-                self.push()?;
-                self.expr(lhs)?;
-                self.pop("%rdi")?;
-                writeln!(self.buf, "  sub %rdi, %rax")?;
-            }
-            ExprKind::Mul(ref lhs, ref rhs) => {
-                self.expr(rhs)?;
-                self.push()?;
-                self.expr(lhs)?;
-                self.pop("%rdi")?;
-                writeln!(self.buf, "  imul %rdi, %rax")?;
-            }
-            ExprKind::Div(ref lhs, ref rhs) => {
-                self.expr(rhs)?;
-                self.push()?;
-                self.expr(lhs)?;
-                self.pop("%rdi")?;
-                writeln!(self.buf, "  cqo")?;
-                writeln!(self.buf, "  idiv %rdi, %rax")?;
+    pub fn emit_epilogue(&mut self) -> Result<()> {
+        writeln!(self.buf, "  mov %rbp, %rsp")?;
+        writeln!(self.buf, "  pop %rbp")?;
+        writeln!(self.buf, "  ret")?;
+        Ok(())
+    }
+
+    pub fn lower(&mut self, instrs: &[TackyInstr]) -> Result<()> {
+        for instr in instrs {
+            match instr {
+                TackyInstr::Label(name) => self.emit_prologue(name)?,
+
+                TackyInstr::AssignVar(dst, src) => {
+                    self.emit_load(src)?;
+                    self.emit_store(dst)?;
+                }
+
+                TackyInstr::Unary { op, src, dst } => {
+                    self.emit_load(src)?;
+                    match op {
+                        UnaryOp::Neg => writeln!(self.buf, "  neg %rax")?,
+                        UnaryOp::BitNot => writeln!(self.buf, "  not %rax")?,
+                    }
+                    self.emit_store(dst)?;
+                }
+
+                TackyInstr::Binary { op, lhs, rhs, dst } => {
+                    self.emit_load(lhs)?;
+                    writeln!(self.buf, "  mov %rax, %r10")?;
+                    self.emit_load(rhs)?;
+
+                    match op {
+                        BinaryOp::Add => writeln!(self.buf, "  add %r10, %rax")?,
+                        BinaryOp::Sub => writeln!(self.buf, "  sub %r10, %rax")?,
+                        BinaryOp::Mul => writeln!(self.buf, "  imul %r10, %rax")?,
+                        BinaryOp::Div => {
+                            writeln!(self.buf, "  mov %r10, %rbx")?;
+                            writeln!(self.buf, "  cqo")?;
+                            writeln!(self.buf, "  idiv %rbx")?;
+                        }
+                    }
+
+                    self.emit_store(dst)?;
+                }
+
+                TackyInstr::Return(val) => {
+                    self.emit_load(val)?;
+                    self.emit_epilogue()?;
+                }
             }
         }
         Ok(())
