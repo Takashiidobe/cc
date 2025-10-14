@@ -68,6 +68,14 @@ impl<W: Write> Codegen<W> {
             ExprKind::Integer(val) => {
                 writeln!(self.buf, "  mov ${}, %rax", val)?;
             }
+            ExprKind::Neg(ref rhs) => {
+                self.expr(rhs)?;
+                writeln!(self.buf, "  neg %rax")?;
+            }
+            ExprKind::BitNot(ref rhs) => {
+                self.expr(rhs)?;
+                writeln!(self.buf, "  not %rax")?;
+            }
             ExprKind::Add(ref lhs, ref rhs) => {
                 self.expr(rhs)?;
                 self.push()?;
@@ -81,6 +89,21 @@ impl<W: Write> Codegen<W> {
                 self.expr(lhs)?;
                 self.pop("%rdi")?;
                 writeln!(self.buf, "  sub %rdi, %rax")?;
+            }
+            ExprKind::Mul(ref lhs, ref rhs) => {
+                self.expr(rhs)?;
+                self.push()?;
+                self.expr(lhs)?;
+                self.pop("%rdi")?;
+                writeln!(self.buf, "  imul %rdi, %rax")?;
+            }
+            ExprKind::Div(ref lhs, ref rhs) => {
+                self.expr(rhs)?;
+                self.push()?;
+                self.expr(lhs)?;
+                self.pop("%rdi")?;
+                writeln!(self.buf, "  cqo")?;
+                writeln!(self.buf, "  idiv %rdi, %rax")?;
             }
         }
         Ok(())

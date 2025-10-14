@@ -6,8 +6,12 @@ pub type Stmt = Node<StmtKind>;
 #[derive(Debug, Clone, PartialEq)]
 pub enum ExprKind {
     Integer(i64),
+    Neg(Box<Expr>),
+    BitNot(Box<Expr>),
     Add(Box<Expr>, Box<Expr>),
     Sub(Box<Expr>, Box<Expr>),
+    Mul(Box<Expr>, Box<Expr>),
+    Div(Box<Expr>, Box<Expr>),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -117,7 +121,7 @@ impl Parser {
             TokenKind::Return => {
                 self.advance();
                 Stmt {
-                    kind: StmtKind::Return(self.primary()),
+                    kind: StmtKind::Return(self.expr()),
                     start,
                     end,
                     source,
@@ -129,6 +133,107 @@ impl Parser {
 
         self.skip(&TokenKind::Semicolon);
         res
+    }
+
+    fn expr(&mut self) -> Expr {
+        self.add()
+    }
+
+    fn add(&mut self) -> Expr {
+        let mut node = self.mul();
+
+        #[allow(irrefutable_let_patterns)]
+        while let Token {
+            kind,
+            start,
+            end,
+            source,
+        } = self.peek()
+        {
+            if !matches!(kind, TokenKind::Plus | TokenKind::Minus) {
+                break;
+            }
+
+            self.advance();
+
+            node = Expr {
+                kind: if kind == TokenKind::Plus {
+                    ExprKind::Add(Box::new(node), Box::new(self.mul()))
+                } else {
+                    ExprKind::Sub(Box::new(node), Box::new(self.mul()))
+                },
+                start,
+                end,
+                source: source.clone(),
+                r#type: Type::Int,
+            }
+        }
+
+        node
+    }
+
+    fn mul(&mut self) -> Expr {
+        let mut node = self.unary();
+
+        #[allow(irrefutable_let_patterns)]
+        while let Token {
+            kind,
+            start,
+            end,
+            source,
+        } = self.peek()
+        {
+            if !matches!(kind, TokenKind::Star | TokenKind::Slash) {
+                break;
+            }
+
+            self.advance();
+
+            node = Expr {
+                kind: if kind == TokenKind::Star {
+                    ExprKind::Mul(Box::new(node), Box::new(self.unary()))
+                } else {
+                    ExprKind::Div(Box::new(node), Box::new(self.unary()))
+                },
+                start,
+                end,
+                source: source.clone(),
+                r#type: Type::Int,
+            }
+        }
+
+        node
+    }
+
+    fn unary(&mut self) -> Expr {
+        let Token {
+            start,
+            end,
+            kind,
+            source,
+        } = self.peek();
+
+        if matches!(kind, TokenKind::Plus | TokenKind::Minus | TokenKind::Tilde) {
+            self.advance();
+
+            if kind == TokenKind::Plus {
+                return self.unary();
+            }
+
+            return Expr {
+                kind: if kind == TokenKind::Minus {
+                    ExprKind::Neg(Box::new(self.unary()))
+                } else {
+                    ExprKind::BitNot(Box::new(self.unary()))
+                },
+                start,
+                end,
+                source,
+                r#type: Type::Int,
+            };
+        }
+
+        self.primary()
     }
 
     fn primary(&mut self) -> Expr {
@@ -150,7 +255,13 @@ impl Parser {
                     r#type: Type::Int,
                 }
             }
-            kind => panic!("Expected expression, found {kind:?}"),
+            TokenKind::LParen => {
+                self.advance();
+                let expr = self.expr();
+                self.skip(&TokenKind::RParen);
+                expr
+            }
+            kind => panic!("Expected primary, found {kind:?}"),
         }
     }
 

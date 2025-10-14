@@ -41,10 +41,16 @@ pub enum TokenKind {
     Minus,
 
     #[token("*")]
-    Multiply,
+    Star,
 
     #[token("/")]
-    Divide,
+    Slash,
+
+    #[token("~")]
+    Tilde,
+
+    #[token("--")]
+    Decrement,
 
     #[token("void")]
     Void,
@@ -55,13 +61,13 @@ pub enum TokenKind {
     #[token("return")]
     Return,
 
-    #[regex(r"(0|[1-9][0-9]*)", |lex| lex.slice().parse::<i64>().unwrap(), priority = 5)]
+    #[regex(r"([0-9]+)", |lex| lex.slice().parse::<i64>().unwrap(), priority = 5)]
     Integer(i64),
 
-    #[regex(r"(0|[1-9][0-9]*)\.[0-9]*", |lex| lex.slice().parse::<f64>().unwrap(), priority = 4)]
+    #[regex(r"[0-9]+\.[0-9]+", |lex| lex.slice().parse::<f64>().unwrap(), priority = 4)]
     Float(f64),
 
-    #[regex(r#"\w*"#, |lex| lex.slice().to_owned(), priority = 2)]
+    #[regex(r#"[a-zA-Z_]\w*"#, |lex| lex.slice().to_owned(), priority = 2)]
     Identifier(String),
 
     #[regex(r#""\w*""#, |lex| lex.slice().to_owned())]
@@ -69,6 +75,9 @@ pub enum TokenKind {
 
     #[regex(r#"//.*"#, |lex| lex.slice().to_owned(), priority = 4)]
     Comment(String),
+
+    #[regex(r#"\\\*.*\*\/"#, |lex| lex.slice().to_owned())]
+    MultilineComment(String),
 }
 
 #[derive(Debug, Clone, PartialEq)]
