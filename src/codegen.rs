@@ -45,6 +45,17 @@ impl<W: Write> Codegen<W> {
             Instruction::Unary { op, operand } => self.emit_unary(*op, operand),
             Instruction::Binary { op, lhs, rhs, dst } => self.emit_binary(*op, lhs, rhs, dst),
             Instruction::Ret => self.emit_epilogue(),
+            Instruction::Copy { src, dst } => todo!(),
+            Instruction::JumpIfZero {
+                condition,
+                identifier,
+            } => todo!(),
+            Instruction::JumpIfNotZero {
+                condition,
+                identifier,
+            } => todo!(),
+            Instruction::Jump(_) => todo!(),
+            Instruction::Label(_) => todo!(),
         }
     }
 
@@ -104,6 +115,14 @@ impl<W: Write> Codegen<W> {
                 writeln!(self.buf, "  cqo")?;
                 writeln!(self.buf, "  idiv {}", rhs_name)
             }
+            BinaryOp::LessThan => todo!(),
+            BinaryOp::LessThanEqual => todo!(),
+            BinaryOp::GreaterThan => todo!(),
+            BinaryOp::GreaterThanEqual => todo!(),
+            BinaryOp::Equal => todo!(),
+            BinaryOp::NotEqual => todo!(),
+            BinaryOp::And => todo!(),
+            BinaryOp::Or => todo!(),
         }
     }
 
@@ -174,6 +193,7 @@ impl<W: Write> Codegen<W> {
             Reg::AX => "%rax",
             Reg::DX => "%rdx",
             Reg::R10 => "%r10",
+            Reg::R11 => "%r11",
         }
     }
 }

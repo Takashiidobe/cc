@@ -12,6 +12,12 @@ pub struct Function {
 }
 
 #[derive(Debug, Clone)]
+pub enum Value {
+    Constant(i64),
+    Var(String),
+}
+
+#[derive(Debug, Clone)]
 pub enum Instruction {
     Mov {
         src: Operand,
@@ -27,6 +33,20 @@ pub enum Instruction {
         rhs: Operand,
         dst: Operand,
     },
+    Copy {
+        src: Operand,
+        dst: Operand,
+    },
+    JumpIfZero {
+        condition: Value,
+        identifier: String,
+    },
+    JumpIfNotZero {
+        condition: Value,
+        identifier: String,
+    },
+    Jump(String),
+    Label(String),
     AllocateStack(i64),
     Ret,
 }
@@ -43,6 +63,7 @@ pub enum Operand {
 pub enum Reg {
     AX,
     R10,
+    R11,
     DX,
 }
 
@@ -59,6 +80,14 @@ pub enum BinaryOp {
     Add,
     Sub,
     Rem,
+    LessThan,
+    LessThanEqual,
+    GreaterThan,
+    GreaterThanEqual,
+    Equal,
+    NotEqual,
+    And,
+    Or,
 }
 
 pub struct TackyGen {
@@ -147,11 +176,28 @@ impl TackyGen {
             }
             ExprKind::Neg(rhs) => self.gen_unary(UnaryOp::Neg, rhs, instructions),
             ExprKind::BitNot(rhs) => self.gen_unary(UnaryOp::Not, rhs, instructions),
+
             ExprKind::Add(lhs, rhs) => self.gen_binary(BinaryOp::Add, lhs, rhs, instructions),
             ExprKind::Sub(lhs, rhs) => self.gen_binary(BinaryOp::Sub, lhs, rhs, instructions),
             ExprKind::Mul(lhs, rhs) => self.gen_binary(BinaryOp::Mul, lhs, rhs, instructions),
             ExprKind::Div(lhs, rhs) => self.gen_binary(BinaryOp::Div, lhs, rhs, instructions),
             ExprKind::Rem(lhs, rhs) => self.gen_binary(BinaryOp::Rem, lhs, rhs, instructions),
+
+            ExprKind::LessThan(lhs, rhs) => self.gen_binary(BinaryOp::Add, lhs, rhs, instructions),
+            ExprKind::LessThanEqual(lhs, rhs) => {
+                self.gen_binary(BinaryOp::Sub, lhs, rhs, instructions)
+            }
+            ExprKind::GreaterThan(lhs, rhs) => {
+                self.gen_binary(BinaryOp::Mul, lhs, rhs, instructions)
+            }
+            ExprKind::GreaterThanEqual(lhs, rhs) => {
+                self.gen_binary(BinaryOp::Div, lhs, rhs, instructions)
+            }
+            ExprKind::Equal(lhs, rhs) => self.gen_binary(BinaryOp::Rem, lhs, rhs, instructions),
+            ExprKind::NotEqual(lhs, rhs) => self.gen_binary(BinaryOp::Add, lhs, rhs, instructions),
+
+            ExprKind::And(lhs, rhs) => self.gen_binary(BinaryOp::Sub, lhs, rhs, instructions),
+            ExprKind::Or(lhs, rhs) => self.gen_binary(BinaryOp::Mul, lhs, rhs, instructions),
         }
     }
 

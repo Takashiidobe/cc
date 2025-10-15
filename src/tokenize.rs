@@ -55,6 +55,51 @@ pub enum TokenKind {
     #[token("--")]
     Decrement,
 
+    #[token("++")]
+    Increment,
+
+    #[token("&")]
+    BitAnd,
+
+    #[token("|")]
+    BitOr,
+
+    #[token("^")]
+    Xor,
+
+    #[token("<<")]
+    LShift,
+
+    #[token(">>")]
+    RShift,
+
+    #[token("!")]
+    Not,
+
+    #[token("&&")]
+    And,
+
+    #[token("||")]
+    Or,
+
+    #[token("==")]
+    DoubleEqual,
+
+    #[token("!=")]
+    NotEqual,
+
+    #[token("<")]
+    LessThan,
+
+    #[token(">")]
+    GreaterThan,
+
+    #[token("<=")]
+    LessThanEqual,
+
+    #[token(">=")]
+    GreaterThanEqual,
+
     #[token("void")]
     Void,
 
@@ -99,7 +144,7 @@ pub fn tokenize(source: &str) -> anyhow::Result<Vec<Token>> {
         let kind = t.map_err(|e| anyhow::anyhow!("Error: {e:?}"))?;
 
         // ignore all comments
-        if matches!(kind, TokenKind::Comment(_)) {
+        if matches!(kind, TokenKind::Comment(_) | TokenKind::MultilineComment(_)) {
             continue;
         }
 

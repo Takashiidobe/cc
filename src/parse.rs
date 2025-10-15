@@ -8,11 +8,22 @@ pub enum ExprKind {
     Integer(i64),
     Neg(Box<Expr>),
     BitNot(Box<Expr>),
+
     Add(Box<Expr>, Box<Expr>),
     Sub(Box<Expr>, Box<Expr>),
     Mul(Box<Expr>, Box<Expr>),
     Div(Box<Expr>, Box<Expr>),
     Rem(Box<Expr>, Box<Expr>),
+
+    Equal(Box<Expr>, Box<Expr>),
+    NotEqual(Box<Expr>, Box<Expr>),
+    LessThan(Box<Expr>, Box<Expr>),
+    LessThanEqual(Box<Expr>, Box<Expr>),
+    GreaterThan(Box<Expr>, Box<Expr>),
+    GreaterThanEqual(Box<Expr>, Box<Expr>),
+
+    Or(Box<Expr>, Box<Expr>),
+    And(Box<Expr>, Box<Expr>),
 }
 
 #[derive(Debug, Clone, PartialEq)]
