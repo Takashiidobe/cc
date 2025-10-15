@@ -13,8 +13,14 @@ pub struct Function {
 
 #[derive(Debug, Clone)]
 pub enum Instruction {
-    Mov { src: Operand, dst: Operand },
-    Unary { op: UnaryOp, operand: Operand },
+    Mov {
+        src: Operand,
+        dst: Operand,
+    },
+    Unary {
+        op: UnaryOp,
+        operand: Operand,
+    },
     Binary {
         op: BinaryOp,
         lhs: Operand,
@@ -37,20 +43,22 @@ pub enum Operand {
 pub enum Reg {
     AX,
     R10,
+    DX,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum UnaryOp {
     Neg,
     Not,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum BinaryOp {
     Mul,
     Div,
     Add,
     Sub,
+    Rem,
 }
 
 pub struct TackyGen {
@@ -97,10 +105,7 @@ impl TackyGen {
 
         let new_tmps = self.tmp_counter - start_tmp;
         if new_tmps > 0 {
-            instructions.insert(
-                0,
-                Instruction::AllocateStack((new_tmps as i64) * 8),
-            );
+            instructions.insert(0, Instruction::AllocateStack((new_tmps as i64) * 8));
         }
 
         Function {
@@ -130,11 +135,7 @@ impl TackyGen {
         }
     }
 
-    fn gen_expr(
-        &mut self,
-        expr: &Expr,
-        instructions: &mut Vec<Instruction>,
-    ) -> Operand {
+    fn gen_expr(&mut self, expr: &Expr, instructions: &mut Vec<Instruction>) -> Operand {
         match &expr.kind {
             ExprKind::Integer(n) => {
                 let tmp = self.fresh_tmp();
@@ -146,18 +147,11 @@ impl TackyGen {
             }
             ExprKind::Neg(rhs) => self.gen_unary(UnaryOp::Neg, rhs, instructions),
             ExprKind::BitNot(rhs) => self.gen_unary(UnaryOp::Not, rhs, instructions),
-            ExprKind::Add(lhs, rhs) => {
-                self.gen_binary(BinaryOp::Add, lhs, rhs, instructions)
-            }
-            ExprKind::Sub(lhs, rhs) => {
-                self.gen_binary(BinaryOp::Sub, lhs, rhs, instructions)
-            }
-            ExprKind::Mul(lhs, rhs) => {
-                self.gen_binary(BinaryOp::Mul, lhs, rhs, instructions)
-            }
-            ExprKind::Div(lhs, rhs) => {
-                self.gen_binary(BinaryOp::Div, lhs, rhs, instructions)
-            }
+            ExprKind::Add(lhs, rhs) => self.gen_binary(BinaryOp::Add, lhs, rhs, instructions),
+            ExprKind::Sub(lhs, rhs) => self.gen_binary(BinaryOp::Sub, lhs, rhs, instructions),
+            ExprKind::Mul(lhs, rhs) => self.gen_binary(BinaryOp::Mul, lhs, rhs, instructions),
+            ExprKind::Div(lhs, rhs) => self.gen_binary(BinaryOp::Div, lhs, rhs, instructions),
+            ExprKind::Rem(lhs, rhs) => self.gen_binary(BinaryOp::Rem, lhs, rhs, instructions),
         }
     }
 
@@ -203,24 +197,24 @@ impl TackyGen {
 
         let tmp = self.fresh_tmp();
         instructions.push(Instruction::Mov {
-            src: Operand::Reg(Reg::AX),
+            src: if op == BinaryOp::Rem {
+                Operand::Reg(Reg::DX)
+            } else {
+                Operand::Reg(Reg::AX)
+            },
             dst: Operand::Pseudo(tmp.clone()),
         });
         Operand::Pseudo(tmp)
     }
 
-    fn move_to_reg(
-        &mut self,
-        operand: &Operand,
-        reg: Reg,
-        instructions: &mut Vec<Instruction>,
-    ) {
+    fn move_to_reg(&mut self, operand: &Operand, reg: Reg, instructions: &mut Vec<Instruction>) {
         let dst = Operand::Reg(reg);
-        if let Operand::Reg(existing) = operand {
-            if *existing == reg {
-                return;
-            }
+        if let Operand::Reg(existing) = operand
+            && *existing == reg
+        {
+            return;
         }
+
         instructions.push(Instruction::Mov {
             src: operand.clone(),
             dst,

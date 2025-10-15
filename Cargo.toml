@@ -7,3 +7,15 @@ edition = "2024"
 anyhow = "1.0.100"
 clap = { version = "4.5.48", features = ["derive"] }
 logos = "0.15.1"
+
+[dev-dependencies]
+datatest-stable = "0.3"
+assert_cmd = "2.0.17"
+insta = { version = "1.43.2", features = ["yaml", "glob"] }
+insta-cmd = "0.6.0"
+serde = { version = "1.0.228", features = ["derive"] }
+tempfile = "3.23.0"
+
+[[test]]
+name = "cli"
+harness = false

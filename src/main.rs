@@ -10,29 +10,29 @@ fn main() -> anyhow::Result<(), Error> {
     if args.lex {
         let source = fs::read_to_string(&args.input_path)
             .unwrap_or_else(|err| panic!("Failed to read {}: {}", args.input_path.display(), err));
-        dbg!(&source);
+        eprintln!("{:?}", &source);
         let tokens = tokenize(&source)?;
-        dbg!(tokens);
+        eprintln!("{:?}", tokens);
     }
     if args.parse {
         let source = fs::read_to_string(&args.input_path)
             .unwrap_or_else(|err| panic!("Failed to read {}: {}", args.input_path.display(), err));
-        dbg!(&source);
+        eprintln!("{:?}", &source);
         let tokens = tokenize(&source)?;
-        dbg!(&tokens);
+        eprintln!("{:?}", &tokens);
         let mut parser = Parser::new(source.chars().collect(), tokens);
         let ast = parser.parse();
-        dbg!(ast);
+        eprintln!("{:?}", ast);
     }
     if args.codegen {
         let source = fs::read_to_string(&args.input_path)
             .unwrap_or_else(|err| panic!("Failed to read {}: {}", args.input_path.display(), err));
-        dbg!(&source);
+        eprintln!("{:?}", &source);
         let tokens = tokenize(&source)?;
-        dbg!(&tokens);
+        eprintln!("{:?}", &tokens);
         let mut parser = Parser::new(source.chars().collect(), tokens);
         let ast = parser.parse();
-        dbg!(&ast);
+        eprintln!("{:?}", &ast);
         let tacky = TackyGen::new(ast);
         let tacky_program = tacky.codegen();
         let mut codegen = Codegen::new(std::io::stdout());

@@ -46,6 +46,9 @@ pub enum TokenKind {
     #[token("/")]
     Slash,
 
+    #[token("%")]
+    Percent,
+
     #[token("~")]
     Tilde,
 

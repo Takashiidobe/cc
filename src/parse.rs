@@ -12,6 +12,7 @@ pub enum ExprKind {
     Sub(Box<Expr>, Box<Expr>),
     Mul(Box<Expr>, Box<Expr>),
     Div(Box<Expr>, Box<Expr>),
+    Rem(Box<Expr>, Box<Expr>),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -183,7 +184,10 @@ impl Parser {
             source,
         } = self.peek()
         {
-            if !matches!(kind, TokenKind::Star | TokenKind::Slash) {
+            if !matches!(
+                kind,
+                TokenKind::Star | TokenKind::Slash | TokenKind::Percent
+            ) {
                 break;
             }
 
@@ -192,6 +196,8 @@ impl Parser {
             node = Expr {
                 kind: if kind == TokenKind::Star {
                     ExprKind::Mul(Box::new(node), Box::new(self.unary()))
+                } else if kind == TokenKind::Percent {
+                    ExprKind::Rem(Box::new(node), Box::new(self.unary()))
                 } else {
                     ExprKind::Div(Box::new(node), Box::new(self.unary()))
                 },

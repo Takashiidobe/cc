@@ -43,9 +43,7 @@ impl<W: Write> Codegen<W> {
             Instruction::AllocateStack(amount) => self.emit_allocate_stack(*amount),
             Instruction::Mov { src, dst } => self.emit_mov(src, dst),
             Instruction::Unary { op, operand } => self.emit_unary(*op, operand),
-            Instruction::Binary { op, lhs, rhs, dst } => {
-                self.emit_binary(*op, lhs, rhs, dst)
-            }
+            Instruction::Binary { op, lhs, rhs, dst } => self.emit_binary(*op, lhs, rhs, dst),
             Instruction::Ret => self.emit_epilogue(),
         }
     }
@@ -99,7 +97,7 @@ impl<W: Write> Codegen<W> {
             BinaryOp::Add => writeln!(self.buf, "  add {}, {}", rhs_name, dst_name),
             BinaryOp::Sub => writeln!(self.buf, "  sub {}, {}", rhs_name, dst_name),
             BinaryOp::Mul => writeln!(self.buf, "  imul {}, {}", rhs_name, dst_name),
-            BinaryOp::Div => {
+            BinaryOp::Rem | BinaryOp::Div => {
                 if dst_reg != Reg::AX {
                     panic!("Division result must be placed in %rax");
                 }
@@ -135,9 +133,10 @@ impl<W: Write> Codegen<W> {
             Operand::Imm(value) => format!("${}", value),
             Operand::Reg(reg) => Self::reg_name(*reg).to_string(),
             Operand::Pseudo(name) => {
-                let offset = self.stack_map.get(name).unwrap_or_else(|| {
-                    panic!("Attempted to read from undefined pseudo {}", name)
-                });
+                let offset = self
+                    .stack_map
+                    .get(name)
+                    .unwrap_or_else(|| panic!("Attempted to read from undefined pseudo {}", name));
                 format!("{}(%rbp)", offset)
             }
             Operand::Stack(offset) => format!("{}(%rbp)", offset),
@@ -173,6 +172,7 @@ impl<W: Write> Codegen<W> {
     fn reg_name(reg: Reg) -> &'static str {
         match reg {
             Reg::AX => "%rax",
+            Reg::DX => "%rdx",
             Reg::R10 => "%r10",
         }
     }
