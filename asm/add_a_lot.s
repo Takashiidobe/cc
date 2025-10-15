@@ -2,97 +2,99 @@
 main:
   push %rbp
   mov %rsp, %rbp
-  mov $1, %rax
-  mov %rax, %r10
-  mov $2, %rax
-  add %r10, %rax
-  mov %rax, -8(%rbp)
+  sub $296, %rsp
+  mov $1, -8(%rbp)
+  mov $2, -16(%rbp)
   mov -8(%rbp), %rax
-  mov %rax, %r10
-  mov $3, %rax
-  add %r10, %rax
-  mov %rax, -16(%rbp)
-  mov -16(%rbp), %rax
-  mov %rax, %r10
-  mov $4, %rax
+  mov -16(%rbp), %r10
   add %r10, %rax
   mov %rax, -24(%rbp)
+  mov $3, -32(%rbp)
   mov -24(%rbp), %rax
-  mov %rax, %r10
-  mov $5, %rax
-  add %r10, %rax
-  mov %rax, -32(%rbp)
-  mov -32(%rbp), %rax
-  mov %rax, %r10
-  mov $6, %rax
+  mov -32(%rbp), %r10
   add %r10, %rax
   mov %rax, -40(%rbp)
+  mov $4, -48(%rbp)
   mov -40(%rbp), %rax
-  mov %rax, %r10
-  mov $7, %rax
-  add %r10, %rax
-  mov %rax, -48(%rbp)
-  mov -48(%rbp), %rax
-  mov %rax, %r10
-  mov $8, %rax
+  mov -48(%rbp), %r10
   add %r10, %rax
   mov %rax, -56(%rbp)
+  mov $5, -64(%rbp)
   mov -56(%rbp), %rax
-  mov %rax, %r10
-  mov $9, %rax
-  add %r10, %rax
-  mov %rax, -64(%rbp)
-  mov -64(%rbp), %rax
-  mov %rax, %r10
-  mov $10, %rax
+  mov -64(%rbp), %r10
   add %r10, %rax
   mov %rax, -72(%rbp)
+  mov $6, -80(%rbp)
   mov -72(%rbp), %rax
-  mov %rax, %r10
-  mov $11, %rax
-  add %r10, %rax
-  mov %rax, -80(%rbp)
-  mov -80(%rbp), %rax
-  mov %rax, %r10
-  mov $12, %rax
+  mov -80(%rbp), %r10
   add %r10, %rax
   mov %rax, -88(%rbp)
+  mov $7, -96(%rbp)
   mov -88(%rbp), %rax
-  mov %rax, %r10
-  mov $13, %rax
-  add %r10, %rax
-  mov %rax, -96(%rbp)
-  mov -96(%rbp), %rax
-  mov %rax, %r10
-  mov $14, %rax
+  mov -96(%rbp), %r10
   add %r10, %rax
   mov %rax, -104(%rbp)
+  mov $8, -112(%rbp)
   mov -104(%rbp), %rax
-  mov %rax, %r10
-  mov $15, %rax
-  add %r10, %rax
-  mov %rax, -112(%rbp)
-  mov -112(%rbp), %rax
-  mov %rax, %r10
-  mov $16, %rax
+  mov -112(%rbp), %r10
   add %r10, %rax
   mov %rax, -120(%rbp)
+  mov $9, -128(%rbp)
   mov -120(%rbp), %rax
-  mov %rax, %r10
-  mov $17, %rax
-  add %r10, %rax
-  mov %rax, -128(%rbp)
-  mov -128(%rbp), %rax
-  mov %rax, %r10
-  mov $18, %rax
+  mov -128(%rbp), %r10
   add %r10, %rax
   mov %rax, -136(%rbp)
+  mov $10, -144(%rbp)
   mov -136(%rbp), %rax
-  mov %rax, %r10
-  mov $19, %rax
+  mov -144(%rbp), %r10
   add %r10, %rax
-  mov %rax, -144(%rbp)
-  mov -144(%rbp), %rax
+  mov %rax, -152(%rbp)
+  mov $11, -160(%rbp)
+  mov -152(%rbp), %rax
+  mov -160(%rbp), %r10
+  add %r10, %rax
+  mov %rax, -168(%rbp)
+  mov $12, -176(%rbp)
+  mov -168(%rbp), %rax
+  mov -176(%rbp), %r10
+  add %r10, %rax
+  mov %rax, -184(%rbp)
+  mov $13, -192(%rbp)
+  mov -184(%rbp), %rax
+  mov -192(%rbp), %r10
+  add %r10, %rax
+  mov %rax, -200(%rbp)
+  mov $14, -208(%rbp)
+  mov -200(%rbp), %rax
+  mov -208(%rbp), %r10
+  add %r10, %rax
+  mov %rax, -216(%rbp)
+  mov $15, -224(%rbp)
+  mov -216(%rbp), %rax
+  mov -224(%rbp), %r10
+  add %r10, %rax
+  mov %rax, -232(%rbp)
+  mov $16, -240(%rbp)
+  mov -232(%rbp), %rax
+  mov -240(%rbp), %r10
+  add %r10, %rax
+  mov %rax, -248(%rbp)
+  mov $17, -256(%rbp)
+  mov -248(%rbp), %rax
+  mov -256(%rbp), %r10
+  add %r10, %rax
+  mov %rax, -264(%rbp)
+  mov $18, -272(%rbp)
+  mov -264(%rbp), %rax
+  mov -272(%rbp), %r10
+  add %r10, %rax
+  mov %rax, -280(%rbp)
+  mov $19, -288(%rbp)
+  mov -280(%rbp), %rax
+  mov -288(%rbp), %r10
+  add %r10, %rax
+  mov %rax, -296(%rbp)
+  mov -296(%rbp), %rax
   mov %rbp, %rsp
   pop %rbp
   ret

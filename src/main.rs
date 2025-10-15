@@ -33,10 +33,10 @@ fn main() -> anyhow::Result<(), Error> {
         let mut parser = Parser::new(source.chars().collect(), tokens);
         let ast = parser.parse();
         dbg!(&ast);
-        let mut tacky = TackyGen::new(ast);
-        let tacky_instructions = tacky.codegen();
+        let tacky = TackyGen::new(ast);
+        let tacky_program = tacky.codegen();
         let mut codegen = Codegen::new(std::io::stdout());
-        codegen.lower(&tacky_instructions)?;
+        codegen.lower(&tacky_program)?;
     }
     Ok(())
 }
