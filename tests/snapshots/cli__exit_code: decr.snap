@@ -1,0 +1,6 @@
+---
+source: tests/cli.rs
+assertion_line: 55
+expression: exit_code
+---
+4

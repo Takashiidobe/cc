@@ -180,7 +180,7 @@ impl Parser {
             self.advance();
 
             node = Expr {
-                kind: ExprKind::BitOr(Box::new(node), Box::new(self.and())),
+                kind: ExprKind::Or(Box::new(node), Box::new(self.and())),
                 start,
                 end,
                 source: source.clone(),
@@ -231,7 +231,7 @@ impl Parser {
             source,
         } = self.peek()
         {
-            if !matches!(kind, TokenKind::Xor) {
+            if !matches!(kind, TokenKind::BitOr) {
                 break;
             }
 
@@ -318,7 +318,7 @@ impl Parser {
             source,
         } = self.peek()
         {
-            if !matches!(kind, TokenKind::NotEqual | TokenKind::DoubleEqual) {
+            if !matches!(kind, TokenKind::DoubleEqual | TokenKind::NotEqual) {
                 break;
             }
 
@@ -341,7 +341,7 @@ impl Parser {
     }
 
     fn rel(&mut self) -> Expr {
-        let mut node = self.add();
+        let mut node = self.shift();
 
         #[allow(irrefutable_let_patterns)]
         while let Token {
@@ -576,7 +576,7 @@ impl Parser {
 
     fn skip(&mut self, kind: &TokenKind) {
         if !self.r#match(kind) {
-            panic!("Expected {kind:?}");
+            panic!("Expected {kind:?}, got {:?}", self.peek());
         }
 
         self.advance();

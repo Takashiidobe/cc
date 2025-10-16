@@ -19,79 +19,64 @@ pub enum Value {
 
 #[derive(Debug, Clone)]
 pub enum Instruction {
-    Mov {
-        src: Operand,
-        dst: Operand,
-    },
+    Return(Value),
     Unary {
         op: UnaryOp,
-        operand: Operand,
+        src: Value,
+        dst: Value,
     },
     Binary {
         op: BinaryOp,
-        lhs: Operand,
-        rhs: Operand,
-        dst: Operand,
+        src1: Value,
+        src2: Value,
+        dst: Value,
     },
     Copy {
-        src: Operand,
-        dst: Operand,
+        src: Value,
+        dst: Value,
     },
+    Jump(String),
     JumpIfZero {
         condition: Value,
-        identifier: String,
+        target: String,
     },
     JumpIfNotZero {
         condition: Value,
-        identifier: String,
+        target: String,
     },
-    Jump(String),
     Label(String),
-    AllocateStack(i64),
-    Ret,
-}
-
-#[derive(Debug, Clone)]
-pub enum Operand {
-    Imm(i64),
-    Reg(Reg),
-    Pseudo(String),
-    Stack(i64),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Reg {
-    AX,
-    R10,
-    R11,
-    DX,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum UnaryOp {
-    Neg,
+    Negate,
+    Complement,
     Not,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BinaryOp {
-    Mul,
-    Div,
     Add,
-    Sub,
-    Rem,
-    LessThan,
-    LessThanEqual,
-    GreaterThan,
-    GreaterThanEqual,
+    Subtract,
+    Multiply,
+    Divide,
+    Remainder,
     Equal,
     NotEqual,
-    And,
-    Or,
+    LessThan,
+    LessOrEqual,
+    GreaterThan,
+    GreaterOrEqual,
+    BitAnd,
+    BitOr,
+    BitXor,
+    LeftShift,
+    RightShift,
 }
 
 pub struct TackyGen {
     tmp_counter: usize,
+    label_counter: usize,
     program: AstProgram,
 }
 
@@ -102,9 +87,16 @@ impl TackyGen {
         name
     }
 
+    fn fresh_label(&mut self, prefix: &str) -> String {
+        let name = format!("{}.{}", prefix, self.label_counter);
+        self.label_counter += 1;
+        name
+    }
+
     pub fn new(program: AstProgram) -> Self {
         Self {
             tmp_counter: 0,
+            label_counter: 0,
             program,
         }
     }
@@ -126,15 +118,8 @@ impl TackyGen {
 
     fn gen_function(&mut self, name: &str, body: &[Stmt]) -> Function {
         let mut instructions = Vec::new();
-        let start_tmp = self.tmp_counter;
-
         for stmt in body {
             self.gen_stmt(stmt, &mut instructions);
-        }
-
-        let new_tmps = self.tmp_counter - start_tmp;
-        if new_tmps > 0 {
-            instructions.insert(0, Instruction::AllocateStack((new_tmps as i64) * 8));
         }
 
         Function {
@@ -147,8 +132,7 @@ impl TackyGen {
         match &stmt.kind {
             StmtKind::Return(expr) => {
                 let value = self.gen_expr(expr, instructions);
-                self.move_to_reg(&value, Reg::AX, instructions);
-                instructions.push(Instruction::Ret);
+                instructions.push(Instruction::Return(value));
             }
             StmtKind::Expr(expr) => {
                 let _ = self.gen_expr(expr, instructions);
@@ -164,105 +148,195 @@ impl TackyGen {
         }
     }
 
-    fn gen_expr(&mut self, expr: &Expr, instructions: &mut Vec<Instruction>) -> Operand {
+    fn gen_expr(&mut self, expr: &Expr, instructions: &mut Vec<Instruction>) -> Value {
         match &expr.kind {
-            ExprKind::Integer(n) => {
-                let tmp = self.fresh_tmp();
-                instructions.push(Instruction::Mov {
-                    src: Operand::Imm(*n),
-                    dst: Operand::Pseudo(tmp.clone()),
-                });
-                Operand::Pseudo(tmp)
+            ExprKind::Integer(n) => Value::Constant(*n),
+            ExprKind::Neg(rhs) => self.gen_unary_expr(UnaryOp::Negate, rhs, instructions),
+            ExprKind::BitNot(rhs) => self.gen_unary_expr(UnaryOp::Complement, rhs, instructions),
+            ExprKind::Not(rhs) => self.gen_unary_expr(UnaryOp::Not, rhs, instructions),
+            ExprKind::Add(lhs, rhs) => self.gen_binary_expr(BinaryOp::Add, lhs, rhs, instructions),
+            ExprKind::Sub(lhs, rhs) => {
+                self.gen_binary_expr(BinaryOp::Subtract, lhs, rhs, instructions)
             }
-            ExprKind::Neg(rhs) => self.gen_unary(UnaryOp::Neg, rhs, instructions),
-            ExprKind::BitNot(rhs) => self.gen_unary(UnaryOp::Not, rhs, instructions),
-            ExprKind::Add(lhs, rhs) => self.gen_binary(BinaryOp::Add, lhs, rhs, instructions),
-            ExprKind::Sub(lhs, rhs) => self.gen_binary(BinaryOp::Sub, lhs, rhs, instructions),
-            ExprKind::Mul(lhs, rhs) => self.gen_binary(BinaryOp::Mul, lhs, rhs, instructions),
-            ExprKind::Div(lhs, rhs) => self.gen_binary(BinaryOp::Div, lhs, rhs, instructions),
-            ExprKind::Rem(lhs, rhs) => self.gen_binary(BinaryOp::Rem, lhs, rhs, instructions),
-            ExprKind::LessThan(lhs, rhs) => todo!(),
-            ExprKind::LessThanEqual(lhs, rhs) => todo!(),
-            ExprKind::GreaterThan(lhs, rhs) => todo!(),
-            ExprKind::GreaterThanEqual(lhs, rhs) => todo!(),
-            ExprKind::Equal(lhs, rhs) => todo!(),
-            ExprKind::NotEqual(lhs, rhs) => todo!(),
-            ExprKind::And(lhs, rhs) => todo!(),
-            ExprKind::Or(lhs, rhs) => todo!(),
-            ExprKind::LeftShift(node, node1) => todo!(),
-            ExprKind::RightShift(node, node1) => todo!(),
-            ExprKind::Not(node) => todo!(),
-            ExprKind::Incr(node) => todo!(),
-            ExprKind::Decr(node) => todo!(),
-            ExprKind::BitAnd(node, node1) => todo!(),
-            ExprKind::Xor(node, node1) => todo!(),
-            ExprKind::BitOr(node, node1) => todo!(),
+            ExprKind::Mul(lhs, rhs) => {
+                self.gen_binary_expr(BinaryOp::Multiply, lhs, rhs, instructions)
+            }
+            ExprKind::Div(lhs, rhs) => {
+                self.gen_binary_expr(BinaryOp::Divide, lhs, rhs, instructions)
+            }
+            ExprKind::Rem(lhs, rhs) => {
+                self.gen_binary_expr(BinaryOp::Remainder, lhs, rhs, instructions)
+            }
+            ExprKind::LessThan(lhs, rhs) => {
+                self.gen_binary_expr(BinaryOp::LessThan, lhs, rhs, instructions)
+            }
+            ExprKind::LessThanEqual(lhs, rhs) => {
+                self.gen_binary_expr(BinaryOp::LessOrEqual, lhs, rhs, instructions)
+            }
+            ExprKind::GreaterThan(lhs, rhs) => {
+                self.gen_binary_expr(BinaryOp::GreaterThan, lhs, rhs, instructions)
+            }
+            ExprKind::GreaterThanEqual(lhs, rhs) => {
+                self.gen_binary_expr(BinaryOp::GreaterOrEqual, lhs, rhs, instructions)
+            }
+            ExprKind::Equal(lhs, rhs) => {
+                self.gen_binary_expr(BinaryOp::Equal, lhs, rhs, instructions)
+            }
+            ExprKind::NotEqual(lhs, rhs) => {
+                self.gen_binary_expr(BinaryOp::NotEqual, lhs, rhs, instructions)
+            }
+            ExprKind::BitAnd(lhs, rhs) => {
+                self.gen_binary_expr(BinaryOp::BitAnd, lhs, rhs, instructions)
+            }
+            ExprKind::BitOr(lhs, rhs) => {
+                self.gen_binary_expr(BinaryOp::BitOr, lhs, rhs, instructions)
+            }
+            ExprKind::Xor(lhs, rhs) => {
+                self.gen_binary_expr(BinaryOp::BitXor, lhs, rhs, instructions)
+            }
+            ExprKind::LeftShift(lhs, rhs) => {
+                self.gen_binary_expr(BinaryOp::LeftShift, lhs, rhs, instructions)
+            }
+            ExprKind::RightShift(lhs, rhs) => {
+                self.gen_binary_expr(BinaryOp::RightShift, lhs, rhs, instructions)
+            }
+            ExprKind::And(lhs, rhs) => self.gen_logical_and(lhs, rhs, instructions),
+            ExprKind::Or(lhs, rhs) => self.gen_logical_or(lhs, rhs, instructions),
+            ExprKind::Incr(rhs) => self.gen_inc_dec(BinaryOp::Add, rhs, instructions),
+            ExprKind::Decr(rhs) => self.gen_inc_dec(BinaryOp::Subtract, rhs, instructions),
         }
     }
 
-    fn gen_unary(
+    fn gen_unary_expr(
         &mut self,
         op: UnaryOp,
         rhs: &Expr,
         instructions: &mut Vec<Instruction>,
-    ) -> Operand {
-        let operand = self.gen_expr(rhs, instructions);
-        self.move_to_reg(&operand, Reg::AX, instructions);
+    ) -> Value {
+        let src = self.gen_expr(rhs, instructions);
+        let tmp = self.fresh_tmp();
+        let dst = Value::Var(tmp);
         instructions.push(Instruction::Unary {
             op,
-            operand: Operand::Reg(Reg::AX),
+            src,
+            dst: dst.clone(),
         });
-        let tmp = self.fresh_tmp();
-        instructions.push(Instruction::Mov {
-            src: Operand::Reg(Reg::AX),
-            dst: Operand::Pseudo(tmp.clone()),
-        });
-        Operand::Pseudo(tmp)
+        dst
     }
 
-    fn gen_binary(
+    fn gen_binary_expr(
         &mut self,
         op: BinaryOp,
         lhs: &Expr,
         rhs: &Expr,
         instructions: &mut Vec<Instruction>,
-    ) -> Operand {
-        let lhs_val = self.gen_expr(lhs, instructions);
-        let rhs_val = self.gen_expr(rhs, instructions);
-
-        self.move_to_reg(&lhs_val, Reg::AX, instructions);
-        self.move_to_reg(&rhs_val, Reg::R10, instructions);
-
+    ) -> Value {
+        let src1 = self.gen_expr(lhs, instructions);
+        let src2 = self.gen_expr(rhs, instructions);
+        let tmp = self.fresh_tmp();
+        let dst = Value::Var(tmp);
         instructions.push(Instruction::Binary {
             op,
-            lhs: Operand::Reg(Reg::AX),
-            rhs: Operand::Reg(Reg::R10),
-            dst: Operand::Reg(Reg::AX),
+            src1,
+            src2,
+            dst: dst.clone(),
         });
-
-        let tmp = self.fresh_tmp();
-        instructions.push(Instruction::Mov {
-            src: if op == BinaryOp::Rem {
-                Operand::Reg(Reg::DX)
-            } else {
-                Operand::Reg(Reg::AX)
-            },
-            dst: Operand::Pseudo(tmp.clone()),
-        });
-        Operand::Pseudo(tmp)
+        dst
     }
 
-    fn move_to_reg(&mut self, operand: &Operand, reg: Reg, instructions: &mut Vec<Instruction>) {
-        let dst = Operand::Reg(reg);
-        if let Operand::Reg(existing) = operand
-            && *existing == reg
-        {
-            return;
-        }
+    fn gen_logical_and(
+        &mut self,
+        lhs: &Expr,
+        rhs: &Expr,
+        instructions: &mut Vec<Instruction>,
+    ) -> Value {
+        let result_tmp = self.fresh_tmp();
+        let result = Value::Var(result_tmp.clone());
+        let false_label = self.fresh_label("and.false");
+        let end_label = self.fresh_label("and.end");
 
-        instructions.push(Instruction::Mov {
-            src: operand.clone(),
-            dst,
+        instructions.push(Instruction::Copy {
+            src: Value::Constant(0),
+            dst: result.clone(),
         });
+
+        let lhs_val = self.gen_expr(lhs, instructions);
+        instructions.push(Instruction::JumpIfZero {
+            condition: lhs_val,
+            target: false_label.clone(),
+        });
+
+        let rhs_val = self.gen_expr(rhs, instructions);
+        instructions.push(Instruction::JumpIfZero {
+            condition: rhs_val,
+            target: false_label.clone(),
+        });
+
+        instructions.push(Instruction::Copy {
+            src: Value::Constant(1),
+            dst: result.clone(),
+        });
+        instructions.push(Instruction::Jump(end_label.clone()));
+        instructions.push(Instruction::Label(false_label));
+        instructions.push(Instruction::Label(end_label));
+
+        Value::Var(result_tmp)
+    }
+
+    fn gen_logical_or(
+        &mut self,
+        lhs: &Expr,
+        rhs: &Expr,
+        instructions: &mut Vec<Instruction>,
+    ) -> Value {
+        let result_tmp = self.fresh_tmp();
+        let result = Value::Var(result_tmp.clone());
+        let true_label = self.fresh_label("or.true");
+        let end_label = self.fresh_label("or.end");
+
+        instructions.push(Instruction::Copy {
+            src: Value::Constant(0),
+            dst: result.clone(),
+        });
+
+        let lhs_val = self.gen_expr(lhs, instructions);
+        instructions.push(Instruction::JumpIfNotZero {
+            condition: lhs_val,
+            target: true_label.clone(),
+        });
+
+        let rhs_val = self.gen_expr(rhs, instructions);
+        instructions.push(Instruction::JumpIfNotZero {
+            condition: rhs_val,
+            target: true_label.clone(),
+        });
+
+        instructions.push(Instruction::Jump(end_label.clone()));
+        instructions.push(Instruction::Label(true_label));
+        instructions.push(Instruction::Copy {
+            src: Value::Constant(1),
+            dst: result.clone(),
+        });
+        instructions.push(Instruction::Label(end_label));
+
+        Value::Var(result_tmp)
+    }
+
+    fn gen_inc_dec(
+        &mut self,
+        op: BinaryOp,
+        expr: &Expr,
+        instructions: &mut Vec<Instruction>,
+    ) -> Value {
+        let src = self.gen_expr(expr, instructions);
+        let tmp = self.fresh_tmp();
+        let dst = Value::Var(tmp);
+        instructions.push(Instruction::Binary {
+            op,
+            src1: src,
+            src2: Value::Constant(1),
+            dst: dst.clone(),
+        });
+        dst
     }
 }
