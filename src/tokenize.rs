@@ -82,6 +82,9 @@ pub enum TokenKind {
     #[token("||")]
     Or,
 
+    #[token("=")]
+    Equal,
+
     #[token("==")]
     DoubleEqual,
 

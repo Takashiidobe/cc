@@ -6,6 +6,7 @@ pub type Stmt = Node<StmtKind>;
 #[derive(Debug, Clone, PartialEq)]
 pub enum ExprKind {
     Integer(i64),
+    Var(String),
     Neg(Box<Expr>),
     BitNot(Box<Expr>),
 
@@ -35,6 +36,7 @@ pub enum ExprKind {
 
     LeftShift(Box<Expr>, Box<Expr>),
     RightShift(Box<Expr>, Box<Expr>),
+    Assignment(Box<Expr>, Box<Expr>),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -42,6 +44,8 @@ pub enum StmtKind {
     Expr(Expr),
     Return(Expr),
     Block(Vec<Stmt>),
+    Declaration { name: String, init: Option<Expr> },
+    Null,
     // return type, name, args (not yet), Body
     FnDecl(String, Vec<Stmt>),
 }
@@ -126,40 +130,131 @@ impl Parser {
         let mut stmts = vec![];
 
         while self.peek().kind != TokenKind::RBrace {
-            stmts.push(self.stmt());
+            if self.peek().kind == TokenKind::Int {
+                stmts.push(self.declaration());
+            } else {
+                stmts.push(self.stmt());
+            }
         }
 
         stmts
     }
 
-    fn stmt(&mut self) -> Stmt {
-        let Token {
+    fn declaration(&mut self) -> Stmt {
+        let Token { start, .. } = self.peek();
+        self.skip(&TokenKind::Int);
+
+        let name = match self.peek().kind.clone() {
+            TokenKind::Identifier(name) => {
+                self.advance();
+                name
+            }
+            kind => panic!("Expected identifier in declaration, found {kind:?}"),
+        };
+
+        let init = if self.peek().kind == TokenKind::Equal {
+            self.advance();
+            Some(self.expr())
+        } else {
+            None
+        };
+
+        self.skip(&TokenKind::Semicolon);
+
+        let end = self.index;
+        let source: String = self.source[start..end].iter().collect();
+
+        Stmt {
+            kind: StmtKind::Declaration { name, init },
             start,
             end,
-            kind,
             source,
-        } = self.peek();
+            r#type: Type::Int,
+        }
+    }
 
-        let res = match kind {
+    fn stmt(&mut self) -> Stmt {
+        let token = self.peek();
+        match token.kind {
             TokenKind::Return => {
                 self.advance();
+                let expr = self.expr();
+                self.skip(&TokenKind::Semicolon);
                 Stmt {
-                    kind: StmtKind::Return(self.expr()),
+                    kind: StmtKind::Return(expr),
+                    start: token.start,
+                    end: self.index,
+                    source: token.source,
+                    r#type: Type::Int,
+                }
+            }
+            TokenKind::LBrace => self.block(),
+            TokenKind::Semicolon => {
+                self.advance();
+                Stmt {
+                    kind: StmtKind::Null,
+                    start: token.start,
+                    end: token.end,
+                    source: token.source,
+                    r#type: Type::Void,
+                }
+            }
+            _ => {
+                let expr = self.expr();
+                self.skip(&TokenKind::Semicolon);
+                let start = expr.start;
+                let end = expr.end;
+                let source = expr.source.clone();
+                Stmt {
+                    kind: StmtKind::Expr(expr),
                     start,
                     end,
                     source,
                     r#type: Type::Int,
                 }
             }
-            kind => panic!("Expected return, got {kind:?}"),
-        };
+        }
+    }
 
-        self.skip(&TokenKind::Semicolon);
-        res
+    fn block(&mut self) -> Stmt {
+        let Token { start, .. } = self.peek();
+        self.skip(&TokenKind::LBrace);
+        let stmts = self.stmts();
+        self.skip(&TokenKind::RBrace);
+        let end = self.index;
+        let source: String = self.source[start..end].iter().collect();
+        Stmt {
+            kind: StmtKind::Block(stmts),
+            start,
+            end,
+            source,
+            r#type: Type::Void,
+        }
     }
 
     fn expr(&mut self) -> Expr {
-        self.or()
+        self.assign()
+    }
+
+    fn assign(&mut self) -> Expr {
+        let lhs = self.or();
+
+        if self.peek().kind == TokenKind::Equal {
+            self.advance();
+            let rhs = self.assign();
+            let start = lhs.start;
+            let end = rhs.end;
+            let source: String = self.source[start..end].iter().collect();
+            Expr {
+                kind: ExprKind::Assignment(Box::new(lhs), Box::new(rhs)),
+                start,
+                end,
+                source,
+                r#type: Type::Int,
+            }
+        } else {
+            lhs
+        }
     }
 
     fn or(&mut self) -> Expr {
@@ -540,11 +635,21 @@ impl Parser {
             source,
         } = self.peek();
 
-        match kind {
+        match kind.clone() {
             TokenKind::Integer(n) => {
                 self.advance();
                 Expr {
                     kind: ExprKind::Integer(n),
+                    start,
+                    end,
+                    source,
+                    r#type: Type::Int,
+                }
+            }
+            TokenKind::Identifier(name) => {
+                self.advance();
+                Expr {
+                    kind: ExprKind::Var(name),
                     start,
                     end,
                     source,

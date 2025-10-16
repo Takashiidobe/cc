@@ -142,6 +142,16 @@ impl TackyGen {
                     self.gen_stmt(stmt, instructions);
                 }
             }
+            StmtKind::Declaration { name, init } => {
+                if let Some(init_expr) = init {
+                    let value = self.gen_expr(init_expr, instructions);
+                    instructions.push(Instruction::Copy {
+                        src: value,
+                        dst: Value::Var(name.clone()),
+                    });
+                }
+            }
+            StmtKind::Null => {}
             StmtKind::FnDecl(_, _) => {
                 panic!("Nested function declarations are not supported in this stage");
             }
@@ -151,6 +161,7 @@ impl TackyGen {
     fn gen_expr(&mut self, expr: &Expr, instructions: &mut Vec<Instruction>) -> Value {
         match &expr.kind {
             ExprKind::Integer(n) => Value::Constant(*n),
+            ExprKind::Var(name) => Value::Var(name.clone()),
             ExprKind::Neg(rhs) => self.gen_unary_expr(UnaryOp::Negate, rhs, instructions),
             ExprKind::BitNot(rhs) => self.gen_unary_expr(UnaryOp::Complement, rhs, instructions),
             ExprKind::Not(rhs) => self.gen_unary_expr(UnaryOp::Not, rhs, instructions),
@@ -204,6 +215,19 @@ impl TackyGen {
             ExprKind::Or(lhs, rhs) => self.gen_logical_or(lhs, rhs, instructions),
             ExprKind::Incr(rhs) => self.gen_inc_dec(BinaryOp::Add, rhs, instructions),
             ExprKind::Decr(rhs) => self.gen_inc_dec(BinaryOp::Subtract, rhs, instructions),
+            ExprKind::Assignment(lhs, rhs) => {
+                let rhs_value = self.gen_expr(rhs, instructions);
+                let lhs_expr = lhs.as_ref();
+                let name = match &lhs_expr.kind {
+                    ExprKind::Var(name) => name.clone(),
+                    _ => panic!("Assignment target must be a variable"),
+                };
+                instructions.push(Instruction::Copy {
+                    src: rhs_value,
+                    dst: Value::Var(name.clone()),
+                });
+                Value::Var(name)
+            }
         }
     }
 
