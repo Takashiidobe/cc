@@ -176,28 +176,27 @@ impl TackyGen {
             }
             ExprKind::Neg(rhs) => self.gen_unary(UnaryOp::Neg, rhs, instructions),
             ExprKind::BitNot(rhs) => self.gen_unary(UnaryOp::Not, rhs, instructions),
-
             ExprKind::Add(lhs, rhs) => self.gen_binary(BinaryOp::Add, lhs, rhs, instructions),
             ExprKind::Sub(lhs, rhs) => self.gen_binary(BinaryOp::Sub, lhs, rhs, instructions),
             ExprKind::Mul(lhs, rhs) => self.gen_binary(BinaryOp::Mul, lhs, rhs, instructions),
             ExprKind::Div(lhs, rhs) => self.gen_binary(BinaryOp::Div, lhs, rhs, instructions),
             ExprKind::Rem(lhs, rhs) => self.gen_binary(BinaryOp::Rem, lhs, rhs, instructions),
-
-            ExprKind::LessThan(lhs, rhs) => self.gen_binary(BinaryOp::Add, lhs, rhs, instructions),
-            ExprKind::LessThanEqual(lhs, rhs) => {
-                self.gen_binary(BinaryOp::Sub, lhs, rhs, instructions)
-            }
-            ExprKind::GreaterThan(lhs, rhs) => {
-                self.gen_binary(BinaryOp::Mul, lhs, rhs, instructions)
-            }
-            ExprKind::GreaterThanEqual(lhs, rhs) => {
-                self.gen_binary(BinaryOp::Div, lhs, rhs, instructions)
-            }
-            ExprKind::Equal(lhs, rhs) => self.gen_binary(BinaryOp::Rem, lhs, rhs, instructions),
-            ExprKind::NotEqual(lhs, rhs) => self.gen_binary(BinaryOp::Add, lhs, rhs, instructions),
-
-            ExprKind::And(lhs, rhs) => self.gen_binary(BinaryOp::Sub, lhs, rhs, instructions),
-            ExprKind::Or(lhs, rhs) => self.gen_binary(BinaryOp::Mul, lhs, rhs, instructions),
+            ExprKind::LessThan(lhs, rhs) => todo!(),
+            ExprKind::LessThanEqual(lhs, rhs) => todo!(),
+            ExprKind::GreaterThan(lhs, rhs) => todo!(),
+            ExprKind::GreaterThanEqual(lhs, rhs) => todo!(),
+            ExprKind::Equal(lhs, rhs) => todo!(),
+            ExprKind::NotEqual(lhs, rhs) => todo!(),
+            ExprKind::And(lhs, rhs) => todo!(),
+            ExprKind::Or(lhs, rhs) => todo!(),
+            ExprKind::LeftShift(node, node1) => todo!(),
+            ExprKind::RightShift(node, node1) => todo!(),
+            ExprKind::Not(node) => todo!(),
+            ExprKind::Incr(node) => todo!(),
+            ExprKind::Decr(node) => todo!(),
+            ExprKind::BitAnd(node, node1) => todo!(),
+            ExprKind::Xor(node, node1) => todo!(),
+            ExprKind::BitOr(node, node1) => todo!(),
         }
     }
 

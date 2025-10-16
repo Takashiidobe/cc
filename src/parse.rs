@@ -24,6 +24,17 @@ pub enum ExprKind {
 
     Or(Box<Expr>, Box<Expr>),
     And(Box<Expr>, Box<Expr>),
+    Not(Box<Expr>),
+
+    BitAnd(Box<Expr>, Box<Expr>),
+    Xor(Box<Expr>, Box<Expr>),
+    BitOr(Box<Expr>, Box<Expr>),
+
+    Incr(Box<Expr>),
+    Decr(Box<Expr>),
+
+    LeftShift(Box<Expr>, Box<Expr>),
+    RightShift(Box<Expr>, Box<Expr>),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -148,7 +159,261 @@ impl Parser {
     }
 
     fn expr(&mut self) -> Expr {
-        self.add()
+        self.or()
+    }
+
+    fn or(&mut self) -> Expr {
+        let mut node = self.and();
+
+        #[allow(irrefutable_let_patterns)]
+        while let Token {
+            kind,
+            start,
+            end,
+            source,
+        } = self.peek()
+        {
+            if !matches!(kind, TokenKind::Or) {
+                break;
+            }
+
+            self.advance();
+
+            node = Expr {
+                kind: ExprKind::BitOr(Box::new(node), Box::new(self.and())),
+                start,
+                end,
+                source: source.clone(),
+                r#type: Type::Int,
+            }
+        }
+
+        node
+    }
+
+    fn and(&mut self) -> Expr {
+        let mut node = self.bit_or();
+
+        #[allow(irrefutable_let_patterns)]
+        while let Token {
+            kind,
+            start,
+            end,
+            source,
+        } = self.peek()
+        {
+            if !matches!(kind, TokenKind::And) {
+                break;
+            }
+
+            self.advance();
+
+            node = Expr {
+                kind: ExprKind::And(Box::new(node), Box::new(self.bit_or())),
+                start,
+                end,
+                source: source.clone(),
+                r#type: Type::Int,
+            }
+        }
+
+        node
+    }
+
+    fn bit_or(&mut self) -> Expr {
+        let mut node = self.xor();
+
+        #[allow(irrefutable_let_patterns)]
+        while let Token {
+            kind,
+            start,
+            end,
+            source,
+        } = self.peek()
+        {
+            if !matches!(kind, TokenKind::Xor) {
+                break;
+            }
+
+            self.advance();
+
+            node = Expr {
+                kind: ExprKind::BitOr(Box::new(node), Box::new(self.xor())),
+                start,
+                end,
+                source: source.clone(),
+                r#type: Type::Int,
+            }
+        }
+
+        node
+    }
+
+    fn xor(&mut self) -> Expr {
+        let mut node = self.bit_and();
+
+        #[allow(irrefutable_let_patterns)]
+        while let Token {
+            kind,
+            start,
+            end,
+            source,
+        } = self.peek()
+        {
+            if !matches!(kind, TokenKind::Xor) {
+                break;
+            }
+
+            self.advance();
+
+            node = Expr {
+                kind: ExprKind::Xor(Box::new(node), Box::new(self.bit_and())),
+                start,
+                end,
+                source: source.clone(),
+                r#type: Type::Int,
+            }
+        }
+
+        node
+    }
+
+    fn bit_and(&mut self) -> Expr {
+        let mut node = self.eq();
+
+        #[allow(irrefutable_let_patterns)]
+        while let Token {
+            kind,
+            start,
+            end,
+            source,
+        } = self.peek()
+        {
+            if !matches!(kind, TokenKind::BitAnd) {
+                break;
+            }
+
+            self.advance();
+
+            node = Expr {
+                kind: ExprKind::BitAnd(Box::new(node), Box::new(self.eq())),
+                start,
+                end,
+                source: source.clone(),
+                r#type: Type::Int,
+            }
+        }
+
+        node
+    }
+
+    fn eq(&mut self) -> Expr {
+        let mut node = self.rel();
+
+        #[allow(irrefutable_let_patterns)]
+        while let Token {
+            kind,
+            start,
+            end,
+            source,
+        } = self.peek()
+        {
+            if !matches!(kind, TokenKind::NotEqual | TokenKind::DoubleEqual) {
+                break;
+            }
+
+            self.advance();
+
+            node = Expr {
+                kind: if kind == TokenKind::DoubleEqual {
+                    ExprKind::Equal(Box::new(node), Box::new(self.rel()))
+                } else {
+                    ExprKind::NotEqual(Box::new(node), Box::new(self.rel()))
+                },
+                start,
+                end,
+                source: source.clone(),
+                r#type: Type::Int,
+            }
+        }
+
+        node
+    }
+
+    fn rel(&mut self) -> Expr {
+        let mut node = self.add();
+
+        #[allow(irrefutable_let_patterns)]
+        while let Token {
+            kind,
+            start,
+            end,
+            source,
+        } = self.peek()
+        {
+            if !matches!(
+                kind,
+                TokenKind::LessThan
+                    | TokenKind::LessThanEqual
+                    | TokenKind::GreaterThan
+                    | TokenKind::GreaterThanEqual
+            ) {
+                break;
+            }
+
+            self.advance();
+
+            node = Expr {
+                kind: if kind == TokenKind::LessThan {
+                    ExprKind::LessThan(Box::new(node), Box::new(self.shift()))
+                } else if kind == TokenKind::LessThanEqual {
+                    ExprKind::LessThanEqual(Box::new(node), Box::new(self.shift()))
+                } else if kind == TokenKind::GreaterThan {
+                    ExprKind::GreaterThan(Box::new(node), Box::new(self.shift()))
+                } else {
+                    ExprKind::GreaterThanEqual(Box::new(node), Box::new(self.shift()))
+                },
+                start,
+                end,
+                source: source.clone(),
+                r#type: Type::Int,
+            }
+        }
+
+        node
+    }
+
+    fn shift(&mut self) -> Expr {
+        let mut node = self.add();
+
+        #[allow(irrefutable_let_patterns)]
+        while let Token {
+            kind,
+            start,
+            end,
+            source,
+        } = self.peek()
+        {
+            if !matches!(kind, TokenKind::LShift | TokenKind::RShift) {
+                break;
+            }
+
+            self.advance();
+
+            node = Expr {
+                kind: if kind == TokenKind::LShift {
+                    ExprKind::LeftShift(Box::new(node), Box::new(self.add()))
+                } else {
+                    ExprKind::RightShift(Box::new(node), Box::new(self.add()))
+                },
+                start,
+                end,
+                source: source.clone(),
+                r#type: Type::Int,
+            }
+        }
+
+        node
     }
 
     fn add(&mut self) -> Expr {
@@ -230,7 +495,15 @@ impl Parser {
             source,
         } = self.peek();
 
-        if matches!(kind, TokenKind::Plus | TokenKind::Minus | TokenKind::Tilde) {
+        if matches!(
+            kind,
+            TokenKind::Plus
+                | TokenKind::Minus
+                | TokenKind::Tilde
+                | TokenKind::Not
+                | TokenKind::Increment
+                | TokenKind::Decrement
+        ) {
             self.advance();
 
             if kind == TokenKind::Plus {
@@ -240,6 +513,12 @@ impl Parser {
             return Expr {
                 kind: if kind == TokenKind::Minus {
                     ExprKind::Neg(Box::new(self.unary()))
+                } else if kind == TokenKind::Not {
+                    ExprKind::Not(Box::new(self.unary()))
+                } else if kind == TokenKind::Increment {
+                    ExprKind::Incr(Box::new(self.unary()))
+                } else if kind == TokenKind::Decrement {
+                    ExprKind::Decr(Box::new(self.unary()))
                 } else {
                     ExprKind::BitNot(Box::new(self.unary()))
                 },
