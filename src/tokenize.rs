@@ -34,8 +34,20 @@ pub enum TokenKind {
     #[token(";")]
     Semicolon,
 
+    #[token("++")]
+    Increment,
+
+    #[token("+=")]
+    PlusEqual,
+
     #[token("+")]
     Plus,
+
+    #[token("--")]
+    Decrement,
+
+    #[token("-=")]
+    MinusEqual,
 
     #[token("-")]
     Minus,
@@ -43,29 +55,29 @@ pub enum TokenKind {
     #[token("*")]
     Star,
 
+    #[token("*=")]
+    StarEqual,
+
     #[token("/")]
     Slash,
+
+    #[token("/=")]
+    SlashEqual,
 
     #[token("%")]
     Percent,
 
+    #[token("%=")]
+    PercentEqual,
+
     #[token("~")]
     Tilde,
 
-    #[token("--")]
-    Decrement,
+    #[token("<<=")]
+    LShiftEqual,
 
-    #[token("++")]
-    Increment,
-
-    #[token("&")]
-    BitAnd,
-
-    #[token("|")]
-    BitOr,
-
-    #[token("^")]
-    Xor,
+    #[token(">>=")]
+    RShiftEqual,
 
     #[token("<<")]
     LShift,
@@ -73,11 +85,29 @@ pub enum TokenKind {
     #[token(">>")]
     RShift,
 
-    #[token("!")]
-    Not,
+    #[token("&=")]
+    AndEqual,
+
+    #[token("&")]
+    BitAnd,
 
     #[token("&&")]
     And,
+
+    #[token("^=")]
+    XorEqual,
+
+    #[token("|")]
+    BitOr,
+
+    #[token("^")]
+    Xor,
+
+    #[token("|=")]
+    OrEqual,
+
+    #[token("!")]
+    Not,
 
     #[token("||")]
     Or,

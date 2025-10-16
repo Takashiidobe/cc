@@ -1,3 +1,6 @@
 int main(void) {
-    return ++5;
+    int x = 1;
+    int y = ++x;
+    int z = x++;
+    return x + y + z;
 }

@@ -213,8 +213,18 @@ impl TackyGen {
             }
             ExprKind::And(lhs, rhs) => self.gen_logical_and(lhs, rhs, instructions),
             ExprKind::Or(lhs, rhs) => self.gen_logical_or(lhs, rhs, instructions),
-            ExprKind::Incr(rhs) => self.gen_inc_dec(BinaryOp::Add, rhs, instructions),
-            ExprKind::Decr(rhs) => self.gen_inc_dec(BinaryOp::Subtract, rhs, instructions),
+            ExprKind::PreIncrement(expr) => {
+                self.gen_inc_dec(expr, BinaryOp::Add, false, instructions)
+            }
+            ExprKind::PreDecrement(expr) => {
+                self.gen_inc_dec(expr, BinaryOp::Subtract, false, instructions)
+            }
+            ExprKind::PostIncrement(expr) => {
+                self.gen_inc_dec(expr, BinaryOp::Add, true, instructions)
+            }
+            ExprKind::PostDecrement(expr) => {
+                self.gen_inc_dec(expr, BinaryOp::Subtract, true, instructions)
+            }
             ExprKind::Assignment(lhs, rhs) => {
                 let rhs_value = self.gen_expr(rhs, instructions);
                 let lhs_expr = lhs.as_ref();
@@ -348,19 +358,45 @@ impl TackyGen {
 
     fn gen_inc_dec(
         &mut self,
-        op: BinaryOp,
         expr: &Expr,
+        op: BinaryOp,
+        is_post: bool,
         instructions: &mut Vec<Instruction>,
     ) -> Value {
-        let src = self.gen_expr(expr, instructions);
-        let tmp = self.fresh_tmp();
-        let dst = Value::Var(tmp);
+        let name = match &expr.kind {
+            ExprKind::Var(name) => name.clone(),
+            _ => panic!("Increment/decrement target must be a variable"),
+        };
+
+        let original_value = if is_post {
+            let tmp_name = self.fresh_tmp();
+            let tmp = Value::Var(tmp_name.clone());
+            instructions.push(Instruction::Copy {
+                src: Value::Var(name.clone()),
+                dst: tmp.clone(),
+            });
+            Some(tmp)
+        } else {
+            None
+        };
+
+        let updated_tmp_name = self.fresh_tmp();
+        let updated_tmp = Value::Var(updated_tmp_name.clone());
         instructions.push(Instruction::Binary {
             op,
-            src1: src,
+            src1: Value::Var(name.clone()),
             src2: Value::Constant(1),
-            dst: dst.clone(),
+            dst: updated_tmp.clone(),
         });
-        dst
+        instructions.push(Instruction::Copy {
+            src: updated_tmp.clone(),
+            dst: Value::Var(name.clone()),
+        });
+
+        if let Some(original) = original_value {
+            original
+        } else {
+            Value::Var(name)
+        }
     }
 }

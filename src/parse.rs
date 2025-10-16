@@ -31,8 +31,10 @@ pub enum ExprKind {
     Xor(Box<Expr>, Box<Expr>),
     BitOr(Box<Expr>, Box<Expr>),
 
-    Incr(Box<Expr>),
-    Decr(Box<Expr>),
+    PreIncrement(Box<Expr>),
+    PreDecrement(Box<Expr>),
+    PostIncrement(Box<Expr>),
+    PostDecrement(Box<Expr>),
 
     LeftShift(Box<Expr>, Box<Expr>),
     RightShift(Box<Expr>, Box<Expr>),
@@ -239,21 +241,70 @@ impl Parser {
     fn assign(&mut self) -> Expr {
         let lhs = self.or();
 
-        if self.peek().kind == TokenKind::Equal {
-            self.advance();
-            let rhs = self.assign();
-            let start = lhs.start;
-            let end = rhs.end;
-            let source: String = self.source[start..end].iter().collect();
-            Expr {
-                kind: ExprKind::Assignment(Box::new(lhs), Box::new(rhs)),
-                start,
-                end,
-                source,
-                r#type: Type::Int,
+        let token_kind = self.peek().kind.clone();
+        match token_kind {
+            TokenKind::Equal => {
+                self.advance();
+                let rhs = self.assign();
+                self.make_assignment_expr(lhs, rhs)
             }
-        } else {
-            lhs
+            TokenKind::PlusEqual
+            | TokenKind::MinusEqual
+            | TokenKind::StarEqual
+            | TokenKind::SlashEqual
+            | TokenKind::PercentEqual
+            | TokenKind::AndEqual
+            | TokenKind::OrEqual
+            | TokenKind::XorEqual
+            | TokenKind::LShiftEqual
+            | TokenKind::RShiftEqual => {
+                self.advance();
+                let rhs = self.assign();
+                let compound_rhs = self.compound_assignment_rhs(lhs.clone(), rhs, &token_kind);
+                self.make_assignment_expr(lhs, compound_rhs)
+            }
+            _ => lhs,
+        }
+    }
+
+    fn make_assignment_expr(&self, lhs: Expr, rhs: Expr) -> Expr {
+        let start = lhs.start;
+        let end = rhs.end;
+        Expr {
+            kind: ExprKind::Assignment(Box::new(lhs), Box::new(rhs)),
+            start,
+            end,
+            source: self.source_slice(start, end),
+            r#type: Type::Int,
+        }
+    }
+
+    fn compound_assignment_rhs(&self, lhs: Expr, rhs: Expr, op: &TokenKind) -> Expr {
+        let start = lhs.start;
+        let end = rhs.end;
+
+        let source = self.source_slice(start, end);
+
+        let kind = match op {
+            TokenKind::PlusEqual => ExprKind::Add(Box::new(lhs), Box::new(rhs)),
+            TokenKind::MinusEqual => ExprKind::Sub(Box::new(lhs), Box::new(rhs)),
+            TokenKind::StarEqual => ExprKind::Mul(Box::new(lhs), Box::new(rhs)),
+            TokenKind::SlashEqual => ExprKind::Div(Box::new(lhs), Box::new(rhs)),
+            TokenKind::PercentEqual => ExprKind::Rem(Box::new(lhs), Box::new(rhs)),
+            TokenKind::AndEqual => ExprKind::BitAnd(Box::new(lhs), Box::new(rhs)),
+            TokenKind::OrEqual => ExprKind::BitOr(Box::new(lhs), Box::new(rhs)),
+            TokenKind::XorEqual => ExprKind::Xor(Box::new(lhs), Box::new(rhs)),
+            TokenKind::LShiftEqual => ExprKind::LeftShift(Box::new(lhs), Box::new(rhs)),
+            TokenKind::RShiftEqual => ExprKind::RightShift(Box::new(lhs), Box::new(rhs)),
+            kind => panic!("Unsupported compound assignment token: {kind:?}"),
+        };
+
+        Expr {
+            kind,
+            start,
+            end,
+            source,
+            r#type: Type::Int,
         }
     }
 
@@ -583,48 +634,120 @@ impl Parser {
     }
 
     fn unary(&mut self) -> Expr {
-        let Token {
-            start,
-            end,
-            kind,
-            source,
-        } = self.peek();
-
-        if matches!(
-            kind,
-            TokenKind::Plus
-                | TokenKind::Minus
-                | TokenKind::Tilde
-                | TokenKind::Not
-                | TokenKind::Increment
-                | TokenKind::Decrement
-        ) {
-            self.advance();
-
-            if kind == TokenKind::Plus {
-                return self.unary();
+        let token = self.peek();
+        match token.kind.clone() {
+            TokenKind::Plus => {
+                self.advance();
+                self.unary()
             }
+            TokenKind::Minus => {
+                self.advance();
+                let expr = self.unary();
+                let start = token.start;
+                let end = expr.end;
+                Expr {
+                    kind: ExprKind::Neg(Box::new(expr)),
+                    start,
+                    end,
+                    source: self.source_slice(start, end),
+                    r#type: Type::Int,
+                }
+            }
+            TokenKind::Tilde => {
+                self.advance();
+                let expr = self.unary();
+                let start = token.start;
+                let end = expr.end;
+                Expr {
+                    kind: ExprKind::BitNot(Box::new(expr)),
+                    start,
+                    end,
+                    source: self.source_slice(start, end),
+                    r#type: Type::Int,
+                }
+            }
+            TokenKind::Not => {
+                self.advance();
+                let expr = self.unary();
+                let start = token.start;
+                let end = expr.end;
+                Expr {
+                    kind: ExprKind::Not(Box::new(expr)),
+                    start,
+                    end,
+                    source: self.source_slice(start, end),
+                    r#type: Type::Int,
+                }
+            }
+            TokenKind::Increment => {
+                self.advance();
+                let expr = self.unary();
+                let start = token.start;
+                let end = expr.end;
+                Expr {
+                    kind: ExprKind::PreIncrement(Box::new(expr)),
+                    start,
+                    end,
+                    source: self.source_slice(start, end),
+                    r#type: Type::Int,
+                }
+            }
+            TokenKind::Decrement => {
+                self.advance();
+                let expr = self.unary();
+                let start = token.start;
+                let end = expr.end;
+                Expr {
+                    kind: ExprKind::PreDecrement(Box::new(expr)),
+                    start,
+                    end,
+                    source: self.source_slice(start, end),
+                    r#type: Type::Int,
+                }
+            }
+            _ => self.postfix(),
+        }
+    }
 
-            return Expr {
-                kind: if kind == TokenKind::Minus {
-                    ExprKind::Neg(Box::new(self.unary()))
-                } else if kind == TokenKind::Not {
-                    ExprKind::Not(Box::new(self.unary()))
-                } else if kind == TokenKind::Increment {
-                    ExprKind::Incr(Box::new(self.unary()))
-                } else if kind == TokenKind::Decrement {
-                    ExprKind::Decr(Box::new(self.unary()))
-                } else {
-                    ExprKind::BitNot(Box::new(self.unary()))
-                },
-                start,
-                end,
-                source,
-                r#type: Type::Int,
-            };
+    fn postfix(&mut self) -> Expr {
+        let mut node = self.primary();
+
+        loop {
+            let token = self.peek();
+            match token.kind {
+                TokenKind::Increment => {
+                    self.advance();
+                    let start = node.start;
+                    let end = self.index;
+                    let source = self.source_slice(start, end);
+                    let boxed = Box::new(node);
+                    node = Expr {
+                        kind: ExprKind::PostIncrement(boxed),
+                        start,
+                        end,
+                        source,
+                        r#type: Type::Int,
+                    };
+                }
+                TokenKind::Decrement => {
+                    self.advance();
+                    let start = node.start;
+                    let end = self.index;
+                    let source = self.source_slice(start, end);
+                    let boxed = Box::new(node);
+                    node = Expr {
+                        kind: ExprKind::PostDecrement(boxed),
+                        start,
+                        end,
+                        source,
+                        r#type: Type::Int,
+                    };
+                }
+                _ => break,
+            }
         }
 
-        self.primary()
+        node
     }
 
     fn primary(&mut self) -> Expr {
@@ -664,6 +787,10 @@ impl Parser {
             }
             kind => panic!("Expected primary, found {kind:?}"),
         }
+    }
+
+    fn source_slice(&self, start: usize, end: usize) -> String {
+        self.source[start..end].iter().collect()
     }
 
     fn peek(&self) -> Token {
