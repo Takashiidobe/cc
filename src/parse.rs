@@ -7,6 +7,7 @@ pub type Stmt = Node<StmtKind>;
 pub enum ExprKind {
     Integer(i64),
     Var(String),
+    FunctionCall(String, Vec<Expr>),
     Neg(Box<Expr>),
     BitNot(Box<Expr>),
     Conditional(Box<Expr>, Box<Expr>, Box<Expr>),
@@ -80,8 +81,11 @@ pub enum StmtKind {
     Continue {
         loop_id: Option<usize>,
     },
-    // return type, name, args (not yet), Body
-    FnDecl(String, Vec<Stmt>),
+    FnDecl {
+        name: String,
+        params: Vec<String>,
+        body: Option<Vec<Stmt>>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -114,7 +118,7 @@ pub struct Parser {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct Program(pub Stmt);
+pub struct Program(pub Vec<Stmt>);
 
 impl Parser {
     pub fn new(source: Vec<char>, tokens: Vec<Token>) -> Self {
@@ -127,43 +131,100 @@ impl Parser {
     }
 
     pub fn parse(&mut self) -> Program {
-        let res = self.main();
+        let mut functions = Vec::new();
+        while self.pos < self.tokens.len() {
+            functions.push(self.function_declaration());
+        }
         self.ensure_done();
-        Program(res)
+        Program(functions)
     }
 
-    // int main(void) { Vec<Stmt> }
-    fn main(&mut self) -> Stmt {
-        let start = self.index;
+    fn function_declaration(&mut self) -> Stmt {
+        if self.pos >= self.tokens.len() {
+            panic!("Unexpected end of input while parsing function declaration");
+        }
 
-        // match type int
-        self.skip(&TokenKind::Int);
-        // match identifier main
-        self.skip(&TokenKind::Identifier("main".to_string()));
-        // match lparen
+        let Token { start, .. } = self.peek();
+        let return_type = match self.peek().kind {
+            TokenKind::Int => {
+                self.advance();
+                Type::Int
+            }
+            TokenKind::Void => {
+                self.advance();
+                Type::Void
+            }
+            ref kind => panic!("Expected function return type, found {kind:?}"),
+        };
+
+        let name = match self.peek().kind.clone() {
+            TokenKind::Identifier(name) => {
+                self.advance();
+                name
+            }
+            kind => panic!("Expected function name, found {kind:?}"),
+        };
+
         self.skip(&TokenKind::LParen);
-        // match type void
-        self.skip(&TokenKind::Void);
-        // match rparen
+        let params = self.parameters();
         self.skip(&TokenKind::RParen);
-        // match lbrace
-        self.skip(&TokenKind::LBrace);
-        // get all statements
-        let stmts = self.stmts();
-        // match rbrace
-        self.skip(&TokenKind::RBrace);
+
+        let body = if self.pos < self.tokens.len() && self.peek().kind == TokenKind::LBrace {
+            self.advance();
+            let stmts = self.stmts();
+            self.skip(&TokenKind::RBrace);
+            Some(stmts)
+        } else {
+            self.skip(&TokenKind::Semicolon);
+            None
+        };
 
         let end = self.index;
-
-        let source: String = self.source[start..end].iter().collect();
+        let source = self.source_slice(start, end);
 
         Stmt {
-            kind: StmtKind::FnDecl("main".to_string(), stmts),
+            kind: StmtKind::FnDecl { name, params, body },
             start,
             end,
             source,
-            r#type: Type::Int,
+            r#type: return_type,
         }
+    }
+
+    fn parameters(&mut self) -> Vec<String> {
+        let mut params = Vec::new();
+
+        if self.peek().kind == TokenKind::RParen {
+            return params;
+        }
+
+        if self.peek().kind == TokenKind::Void {
+            self.advance();
+            if self.peek().kind != TokenKind::RParen {
+                panic!("'void' parameter must be the only parameter");
+            }
+            return params;
+        }
+
+        loop {
+            self.skip(&TokenKind::Int);
+            let name = match self.peek().kind.clone() {
+                TokenKind::Identifier(name) => {
+                    self.advance();
+                    name
+                }
+                kind => panic!("Expected parameter name, found {kind:?}"),
+            };
+            params.push(name);
+
+            if self.peek().kind == TokenKind::Comma {
+                self.advance();
+                continue;
+            }
+            break;
+        }
+
+        params
     }
 
     fn stmts(&mut self) -> Vec<Stmt> {
@@ -968,6 +1029,25 @@ impl Parser {
                         r#type: Type::Int,
                     };
                 }
+                TokenKind::LParen => {
+                    let start = node.start;
+                    let func_name = match &node.kind {
+                        ExprKind::Var(name) => name.clone(),
+                        kind => panic!("Invalid function call target: {kind:?}"),
+                    };
+                    self.advance();
+                    let args = self.arguments();
+                    self.skip(&TokenKind::RParen);
+                    let end = self.index;
+                    let source = self.source_slice(start, end);
+                    node = Expr {
+                        kind: ExprKind::FunctionCall(func_name, args),
+                        start,
+                        end,
+                        source,
+                        r#type: Type::Int,
+                    };
+                }
                 _ => break,
             }
         }
@@ -1016,6 +1096,25 @@ impl Parser {
 
     fn source_slice(&self, start: usize, end: usize) -> String {
         self.source[start..end].iter().collect()
+    }
+
+    fn arguments(&mut self) -> Vec<Expr> {
+        let mut args = Vec::new();
+
+        if self.peek().kind == TokenKind::RParen {
+            return args;
+        }
+
+        loop {
+            args.push(self.assign());
+            if self.peek().kind == TokenKind::Comma {
+                self.advance();
+                continue;
+            }
+            break;
+        }
+
+        args
     }
 
     fn peek(&self) -> Token {

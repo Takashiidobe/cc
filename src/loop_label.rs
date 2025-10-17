@@ -12,7 +12,12 @@ impl LoopLabeler {
     }
 
     pub fn label_program(mut self, program: Program) -> Program {
-        Program(self.label_stmt(program.0))
+        let functions = program
+            .0
+            .into_iter()
+            .map(|stmt| self.label_stmt(stmt))
+            .collect();
+        Program(functions)
     }
 
     fn label_stmt(&mut self, stmt: Stmt) -> Stmt {
@@ -33,10 +38,15 @@ impl LoopLabeler {
                     .map(|stmt| self.label_stmt(stmt))
                     .collect(),
             ),
-            StmtKind::FnDecl(name, body) => StmtKind::FnDecl(
-                name,
-                body.into_iter().map(|stmt| self.label_stmt(stmt)).collect(),
-            ),
+            StmtKind::FnDecl { name, params, body } => {
+                let body = body.map(|stmts| {
+                    stmts
+                        .into_iter()
+                        .map(|stmt| self.label_stmt(stmt))
+                        .collect()
+                });
+                StmtKind::FnDecl { name, params, body }
+            }
             StmtKind::Declaration { name, init } => StmtKind::Declaration { name, init },
             StmtKind::Null => StmtKind::Null,
             StmtKind::If {

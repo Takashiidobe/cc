@@ -8,6 +8,7 @@ pub struct Program {
 #[derive(Debug, Clone)]
 pub struct Function {
     pub name: String,
+    pub params: Vec<String>,
     pub instructions: Vec<Instruction>,
 }
 
@@ -33,6 +34,11 @@ pub enum Instruction {
     },
     Copy {
         src: Value,
+        dst: Value,
+    },
+    FunCall {
+        name: String,
+        args: Vec<Value>,
         dst: Value,
     },
     Jump(String),
@@ -127,28 +133,42 @@ impl TackyGen {
     }
 
     pub fn codegen(mut self) -> Program {
-        let function = self.gen_program();
-        Program {
-            functions: vec![function],
+        let mut functions = Vec::new();
+
+        for function in self.program.0.clone() {
+            match function.kind {
+                StmtKind::FnDecl { name, params, body } => {
+                    if let Some(body) = body {
+                        functions.push(self.gen_function(&name, &params, &body));
+                    }
+                }
+                other => {
+                    panic!("Top-level declaration must be a function declaration, found {other:?}")
+                }
+            }
         }
+
+        Program { functions }
     }
 
-    fn gen_program(&mut self) -> Function {
-        let root = self.program.0.clone();
-        match root.kind {
-            StmtKind::FnDecl(name, body) => self.gen_function(&name, &body),
-            kind => panic!("Top-level statement must be a function declaration, found {kind:?}"),
-        }
-    }
-
-    fn gen_function(&mut self, name: &str, body: &[Stmt]) -> Function {
+    fn gen_function(&mut self, name: &str, params: &[String], body: &[Stmt]) -> Function {
+        debug_assert!(
+            self.loop_stack.is_empty(),
+            "loop stack not empty at function entry"
+        );
         let mut instructions = Vec::new();
         for stmt in body {
             self.gen_stmt(stmt, &mut instructions);
         }
+        debug_assert!(
+            self.loop_stack.is_empty(),
+            "loop stack not empty after generating function {}",
+            name
+        );
 
         Function {
             name: name.to_string(),
+            params: params.to_vec(),
             instructions,
         }
     }
@@ -311,7 +331,7 @@ impl TackyGen {
                 }
             }
             StmtKind::Null => {}
-            StmtKind::FnDecl(_, _) => {
+            StmtKind::FnDecl { .. } => {
                 panic!("Nested function declarations are not supported in this stage");
             }
         }
@@ -321,6 +341,7 @@ impl TackyGen {
         match &expr.kind {
             ExprKind::Integer(n) => Value::Constant(*n),
             ExprKind::Var(name) => Value::Var(name.clone()),
+            ExprKind::FunctionCall(name, args) => self.gen_function_call(name, args, instructions),
             ExprKind::Neg(rhs) => self.gen_unary_expr(UnaryOp::Negate, rhs, instructions),
             ExprKind::BitNot(rhs) => self.gen_unary_expr(UnaryOp::Complement, rhs, instructions),
             ExprKind::Not(rhs) => self.gen_unary_expr(UnaryOp::Not, rhs, instructions),
@@ -427,6 +448,26 @@ impl TackyGen {
                 Value::Var(name)
             }
         }
+    }
+
+    fn gen_function_call(
+        &mut self,
+        name: &str,
+        args: &[Expr],
+        instructions: &mut Vec<Instruction>,
+    ) -> Value {
+        let arg_values = args
+            .iter()
+            .map(|arg| self.gen_expr(arg, instructions))
+            .collect::<Vec<_>>();
+        let tmp = self.fresh_tmp();
+        let dst = Value::Var(tmp.clone());
+        instructions.push(Instruction::FunCall {
+            name: name.to_string(),
+            args: arg_values,
+            dst: dst.clone(),
+        });
+        dst
     }
 
     fn gen_unary_expr(

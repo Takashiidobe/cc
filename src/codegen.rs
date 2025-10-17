@@ -14,9 +14,15 @@ enum Reg {
     AX,
     CX,
     DX,
+    DI,
+    SI,
+    R8,
+    R9,
     R10,
     R11,
 }
+
+const ARGUMENT_REGISTERS: [Reg; 6] = [Reg::DI, Reg::SI, Reg::DX, Reg::CX, Reg::R8, Reg::R9];
 
 impl<W: Write> Codegen<W> {
     pub fn new(buf: W) -> Self {
@@ -44,6 +50,7 @@ impl<W: Write> Codegen<W> {
         if self.frame_size > 0 {
             writeln!(self.buf, "  sub ${}, %rsp", self.frame_size)?;
         }
+        self.move_params_to_stack(function)?;
 
         for instr in &function.instructions {
             self.emit_instruction(instr)?;
@@ -53,6 +60,9 @@ impl<W: Write> Codegen<W> {
 
     fn collect_stack_slots(&mut self, function: &Function) {
         let mut vars = BTreeSet::new();
+        for param in &function.params {
+            vars.insert(param.clone());
+        }
 
         for instr in &function.instructions {
             match instr {
@@ -72,6 +82,12 @@ impl<W: Write> Codegen<W> {
                     Self::collect_value(&mut vars, src);
                     Self::collect_value(&mut vars, dst);
                 }
+                Instruction::FunCall { args, dst, .. } => {
+                    for arg in args {
+                        Self::collect_value(&mut vars, arg);
+                    }
+                    Self::collect_value(&mut vars, dst);
+                }
                 Instruction::Jump(_) | Instruction::Label(_) => {}
                 Instruction::JumpIfZero { condition, .. }
                 | Instruction::JumpIfNotZero { condition, .. } => {
@@ -85,13 +101,41 @@ impl<W: Write> Codegen<W> {
             offset += 8;
             self.stack_map.insert(name, -(offset as i64));
         }
-        self.frame_size = offset as i64;
+        let mut frame_size = offset as i64;
+        if frame_size % 16 != 8 {
+            frame_size += 8;
+        }
+        if frame_size == 0 {
+            frame_size = 8;
+        }
+        self.frame_size = frame_size;
     }
 
     fn collect_value(vars: &mut BTreeSet<String>, value: &Value) {
         if let Value::Var(name) = value {
             vars.insert(name.clone());
         }
+    }
+
+    fn move_params_to_stack(&mut self, function: &Function) -> Result<()> {
+        for (index, param) in function.params.iter().enumerate() {
+            if index < ARGUMENT_REGISTERS.len() {
+                let reg = ARGUMENT_REGISTERS[index];
+                let dest = self.stack_operand(param);
+                writeln!(self.buf, "  mov {}, {}", Self::reg_name(reg), dest)?;
+            } else {
+                let stack_offset = 16 + ((index - ARGUMENT_REGISTERS.len()) as i64) * 8;
+                writeln!(
+                    self.buf,
+                    "  mov {}(%rbp), {}",
+                    stack_offset,
+                    Self::reg_name(Reg::R10)
+                )?;
+                let dest = self.stack_operand(param);
+                writeln!(self.buf, "  mov {}, {}", Self::reg_name(Reg::R10), dest)?;
+            }
+        }
+        Ok(())
     }
 
     fn emit_instruction(&mut self, instr: &Instruction) -> Result<()> {
@@ -101,6 +145,7 @@ impl<W: Write> Codegen<W> {
                 self.emit_epilogue()
             }
             Instruction::Copy { src, dst } => self.emit_copy(src, dst),
+            Instruction::FunCall { name, args, dst } => self.emit_fun_call(name, args, dst),
             Instruction::Unary { op, src, dst } => self.emit_unary(*op, src, dst),
             Instruction::Binary {
                 op,
@@ -259,6 +304,38 @@ impl<W: Write> Codegen<W> {
         }
     }
 
+    fn emit_fun_call(&mut self, name: &str, args: &[Value], dst: &Value) -> Result<()> {
+        let stack_args = if args.len() > ARGUMENT_REGISTERS.len() {
+            &args[ARGUMENT_REGISTERS.len()..]
+        } else {
+            &[]
+        };
+
+        let mut stack_bytes: i64 = 0;
+        if stack_args.len() % 2 != 0 {
+            writeln!(self.buf, "  push $0")?;
+            stack_bytes += 8;
+        }
+
+        for arg in stack_args.iter().rev() {
+            self.load_value_into_reg(arg, Reg::R11)?;
+            writeln!(self.buf, "  push {}", Self::reg_name(Reg::R11))?;
+            stack_bytes += 8;
+        }
+
+        for (reg, arg) in ARGUMENT_REGISTERS.iter().zip(args.iter()) {
+            self.load_value_into_reg(arg, *reg)?;
+        }
+
+        writeln!(self.buf, "  call {}", name)?;
+
+        if stack_bytes > 0 {
+            writeln!(self.buf, "  add ${}, %rsp", stack_bytes)?;
+        }
+
+        self.store_reg_into_value(Reg::AX, dst)
+    }
+
     fn emit_prologue(&mut self, name: &str) -> Result<()> {
         writeln!(self.buf, ".globl {}", name)?;
         writeln!(self.buf, "{}:", name)?;
@@ -306,6 +383,10 @@ impl<W: Write> Codegen<W> {
             Reg::AX => "%rax",
             Reg::CX => "%rcx",
             Reg::DX => "%rdx",
+            Reg::DI => "%rdi",
+            Reg::SI => "%rsi",
+            Reg::R8 => "%r8",
+            Reg::R9 => "%r9",
             Reg::R10 => "%r10",
             Reg::R11 => "%r11",
         }
@@ -316,6 +397,10 @@ impl<W: Write> Codegen<W> {
             Reg::AX => "%al",
             Reg::CX => "%cl",
             Reg::DX => "%dl",
+            Reg::DI => "%dil",
+            Reg::SI => "%sil",
+            Reg::R8 => "%r8b",
+            Reg::R9 => "%r9b",
             Reg::R10 => "%r10b",
             Reg::R11 => "%r11b",
         }

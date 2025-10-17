@@ -14,7 +14,12 @@ impl SemanticAnalyzer {
     }
 
     pub fn analyze_program(mut self, program: Program) -> Program {
-        Program(self.analyze_stmt(program.0))
+        let functions = program
+            .0
+            .into_iter()
+            .map(|stmt| self.analyze_stmt(stmt))
+            .collect();
+        Program(functions)
     }
 
     fn analyze_stmt(&mut self, stmt: Stmt) -> Stmt {
@@ -35,12 +40,32 @@ impl SemanticAnalyzer {
                 self.exit_scope();
                 StmtKind::Compound(stmts)
             }
-            StmtKind::FnDecl(name, body) => {
-                self.enter_scope();
-                let body = body.into_iter().map(|s| self.analyze_stmt(s)).collect();
-                self.exit_scope();
-                StmtKind::FnDecl(name, body)
-            }
+            StmtKind::FnDecl { name, params, body } => match body {
+                Some(body_stmts) => {
+                    self.enter_scope();
+                    let mut unique_params = Vec::new();
+                    for param in params {
+                        let unique = self.fresh_name(&param);
+                        self.insert(param, unique.clone());
+                        unique_params.push(unique);
+                    }
+                    let body = body_stmts
+                        .into_iter()
+                        .map(|s| self.analyze_stmt(s))
+                        .collect();
+                    self.exit_scope();
+                    StmtKind::FnDecl {
+                        name,
+                        params: unique_params,
+                        body: Some(body),
+                    }
+                }
+                None => StmtKind::FnDecl {
+                    name,
+                    params,
+                    body: None,
+                },
+            },
             StmtKind::Declaration { name, init } => {
                 let init = init.map(|expr| self.analyze_expr(expr));
                 let unique_name = self.fresh_name(&name);
@@ -129,6 +154,10 @@ impl SemanticAnalyzer {
                     .unwrap_or_else(|| panic!("use of undeclared identifier {name}"));
                 ExprKind::Var(unique)
             }
+            ExprKind::FunctionCall(name, args) => ExprKind::FunctionCall(
+                name,
+                args.into_iter().map(|arg| self.analyze_expr(arg)).collect(),
+            ),
             ExprKind::Neg(expr) => ExprKind::Neg(Box::new(self.analyze_expr(*expr))),
             ExprKind::BitNot(expr) => ExprKind::BitNot(Box::new(self.analyze_expr(*expr))),
             ExprKind::Add(lhs, rhs) => ExprKind::Add(
