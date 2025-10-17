@@ -2,7 +2,9 @@ use std::collections::{BTreeSet, HashMap};
 use std::io::{Result, Write};
 
 use crate::parse::Type;
-use crate::tacky::{BinaryOp, Function, Instruction, Program as TackyProgram, UnaryOp, Value};
+use crate::tacky::{
+    BinaryOp, Function, Instruction, Program as TackyProgram, StaticVariable, UnaryOp, Value,
+};
 
 pub struct Codegen<W: Write> {
     pub buf: W,
@@ -35,8 +37,30 @@ impl<W: Write> Codegen<W> {
     }
 
     pub fn lower(&mut self, program: &TackyProgram) -> Result<()> {
+        for static_var in &program.statics {
+            self.emit_static_variable(static_var)?;
+        }
         for function in &program.functions {
             self.emit_function(function)?;
+        }
+        Ok(())
+    }
+
+    fn emit_static_variable(&mut self, var: &StaticVariable) -> Result<()> {
+        if var.init == 0 {
+            writeln!(self.buf, ".bss")?;
+        } else {
+            writeln!(self.buf, ".data")?;
+        }
+        if var.global {
+            writeln!(self.buf, ".globl {}", var.name)?;
+        }
+        writeln!(self.buf, ".align 8")?;
+        writeln!(self.buf, "{}:", var.name)?;
+        if var.init == 0 {
+            writeln!(self.buf, "  .zero 8")?
+        } else {
+            writeln!(self.buf, "  .quad {}", var.init)?;
         }
         Ok(())
     }
@@ -47,7 +71,7 @@ impl<W: Write> Codegen<W> {
 
         self.collect_stack_slots(function);
 
-        self.emit_prologue(&function.name)?;
+        self.emit_prologue(function)?;
         if self.frame_size > 0 {
             writeln!(self.buf, "  sub ${}, %rsp", self.frame_size)?;
         }
@@ -170,13 +194,14 @@ impl<W: Write> Codegen<W> {
     }
 
     fn emit_copy(&mut self, src: &Value, dst: &Value) -> Result<()> {
-        let dst_name = match dst {
-            Value::Var(name) => name,
-            Value::Constant(_) => panic!("Copy destination cannot be a constant"),
-        };
-
-        if matches!(src, Value::Var(name) if name == dst_name) {
+        if matches!((src, dst), (Value::Var(a), Value::Var(b)) if a == b)
+            || matches!((src, dst), (Value::Global(a), Value::Global(b)) if a == b)
+        {
             return Ok(());
+        }
+
+        if matches!(dst, Value::Constant(_)) {
+            panic!("Copy destination cannot be a constant");
         }
 
         self.load_value_into_reg(src, Reg::R11)?;
@@ -337,9 +362,12 @@ impl<W: Write> Codegen<W> {
         self.store_reg_into_value(Reg::AX, dst)
     }
 
-    fn emit_prologue(&mut self, name: &str) -> Result<()> {
-        writeln!(self.buf, ".globl {}", name)?;
-        writeln!(self.buf, "{}:", name)?;
+    fn emit_prologue(&mut self, function: &Function) -> Result<()> {
+        writeln!(self.buf, ".text")?;
+        if function.global {
+            writeln!(self.buf, ".globl {}", function.name)?;
+        }
+        writeln!(self.buf, "{}:", function.name)?;
         writeln!(self.buf, "  push %rbp")?;
         writeln!(self.buf, "  mov %rsp, %rbp")
     }
@@ -359,17 +387,23 @@ impl<W: Write> Codegen<W> {
                 let operand = self.stack_operand(name);
                 writeln!(self.buf, "  mov {}, {}", operand, Self::reg_name(reg))
             }
+            Value::Global(name) => {
+                writeln!(self.buf, "  mov {}(%rip), {}", name, Self::reg_name(reg))
+            }
         }
     }
 
     fn store_reg_into_value(&mut self, reg: Reg, value: &Value) -> Result<()> {
-        let name = match value {
-            Value::Var(name) => name,
+        match value {
+            Value::Var(name) => {
+                let operand = self.stack_operand(name);
+                writeln!(self.buf, "  mov {}, {}", Self::reg_name(reg), operand)
+            }
+            Value::Global(name) => {
+                writeln!(self.buf, "  mov {}, {}(%rip)", Self::reg_name(reg), name)
+            }
             Value::Constant(_) => panic!("Cannot store into a constant"),
-        };
-
-        let operand = self.stack_operand(name);
-        writeln!(self.buf, "  mov {}, {}", Self::reg_name(reg), operand)
+        }
     }
 
     fn stack_operand(&self, name: &str) -> String {

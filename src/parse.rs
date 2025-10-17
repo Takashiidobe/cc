@@ -4,6 +4,12 @@ pub type Expr = Node<ExprKind>;
 pub type Stmt = Node<StmtKind>;
 
 #[derive(Debug, Clone, PartialEq)]
+pub enum StorageClass {
+    Static,
+    Extern,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum ExprKind {
     Integer(i64),
     Var(String),
@@ -44,14 +50,43 @@ pub enum ExprKind {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct VariableDecl {
+    pub name: String,
+    pub init: Option<Expr>,
+    pub storage_class: Option<StorageClass>,
+    pub r#type: Type,
+    pub is_definition: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct FunctionDecl {
+    pub name: String,
+    pub params: Vec<String>,
+    pub body: Option<Vec<Stmt>>,
+    pub storage_class: Option<StorageClass>,
+    pub return_type: Type,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum DeclKind {
+    Function(FunctionDecl),
+    Variable(VariableDecl),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Decl {
+    pub kind: DeclKind,
+    pub start: usize,
+    pub end: usize,
+    pub source: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum StmtKind {
     Expr(Expr),
     Return(Expr),
     Compound(Vec<Stmt>),
-    Declaration {
-        name: String,
-        init: Option<Expr>,
-    },
+    Declaration(VariableDecl),
     Null,
     If {
         condition: Expr,
@@ -80,11 +115,6 @@ pub enum StmtKind {
     },
     Continue {
         loop_id: Option<usize>,
-    },
-    FnDecl {
-        name: String,
-        params: Vec<String>,
-        body: Option<Vec<Stmt>>,
     },
 }
 
@@ -118,7 +148,7 @@ pub struct Parser {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct Program(pub Vec<Stmt>);
+pub struct Program(pub Vec<Decl>);
 
 impl Parser {
     pub fn new(source: Vec<char>, tokens: Vec<Token>) -> Self {
@@ -130,41 +160,156 @@ impl Parser {
         }
     }
 
-    pub fn parse(&mut self) -> Program {
-        let mut functions = Vec::new();
-        while self.pos < self.tokens.len() {
-            functions.push(self.function_declaration());
+    fn parse_specifiers(&mut self) -> (Type, Option<StorageClass>) {
+        let mut ty: Option<Type> = None;
+        let mut storage: Option<StorageClass> = None;
+        let mut consumed_any = false;
+
+        loop {
+            let kind = if self.pos < self.tokens.len() {
+                self.peek().kind.clone()
+            } else {
+                break;
+            };
+
+            match kind {
+                TokenKind::Int => {
+                    if ty.is_some() {
+                        panic!("duplicate type specifier in declaration");
+                    }
+                    self.advance();
+                    ty = Some(Type::Int);
+                    consumed_any = true;
+                }
+                TokenKind::Void => {
+                    if ty.is_some() {
+                        panic!("duplicate type specifier in declaration");
+                    }
+                    self.advance();
+                    ty = Some(Type::Void);
+                    consumed_any = true;
+                }
+                TokenKind::Static => {
+                    if storage.is_some() {
+                        panic!("multiple storage class specifiers in declaration");
+                    }
+                    self.advance();
+                    storage = Some(StorageClass::Static);
+                    consumed_any = true;
+                }
+                TokenKind::Extern => {
+                    if storage.is_some() {
+                        panic!("multiple storage class specifiers in declaration");
+                    }
+                    self.advance();
+                    storage = Some(StorageClass::Extern);
+                    consumed_any = true;
+                }
+                _ => break,
+            }
         }
-        self.ensure_done();
-        Program(functions)
+
+        if !consumed_any {
+            panic!("expected declaration specifiers");
+        }
+
+        let ty = ty.unwrap_or_else(|| panic!("declaration missing type specifier"));
+        (ty, storage)
     }
 
-    fn function_declaration(&mut self) -> Stmt {
-        if self.pos >= self.tokens.len() {
-            panic!("Unexpected end of input while parsing function declaration");
-        }
-
-        let Token { start, .. } = self.peek();
-        let return_type = match self.peek().kind {
-            TokenKind::Int => {
-                self.advance();
-                Type::Int
-            }
-            TokenKind::Void => {
-                self.advance();
-                Type::Void
-            }
-            ref kind => panic!("Expected function return type, found {kind:?}"),
-        };
-
-        let name = match self.peek().kind.clone() {
+    fn expect_identifier(&mut self) -> String {
+        match self.peek().kind.clone() {
             TokenKind::Identifier(name) => {
                 self.advance();
                 name
             }
-            kind => panic!("Expected function name, found {kind:?}"),
+            kind => panic!("Expected identifier, found {kind:?}"),
+        }
+    }
+
+    fn is_declaration_start(&self) -> bool {
+        if self.pos >= self.tokens.len() {
+            return false;
+        }
+        matches!(
+            self.tokens[self.pos].kind,
+            TokenKind::Int | TokenKind::Static | TokenKind::Extern
+        )
+    }
+
+    fn variable_declaration_stmt(&mut self) -> Stmt {
+        let Token { start, .. } = self.peek();
+        let (ty, storage_class) = self.parse_specifiers();
+        if ty == Type::Void {
+            panic!("variable declared with void type");
+        }
+
+        let name = self.expect_identifier();
+        let init = if self.peek().kind == TokenKind::Equal {
+            self.advance();
+            Some(self.expr())
+        } else {
+            None
         };
 
+        self.skip(&TokenKind::Semicolon);
+
+        let end = self.index;
+        let source = self.source_slice(start, end);
+
+        let is_definition = storage_class != Some(StorageClass::Extern);
+        let decl = VariableDecl {
+            name,
+            init,
+            storage_class,
+            r#type: ty.clone(),
+            is_definition,
+        };
+
+        Stmt {
+            kind: StmtKind::Declaration(decl),
+            start,
+            end,
+            source,
+            r#type: ty,
+        }
+    }
+
+    pub fn parse(&mut self) -> Program {
+        let mut decls = Vec::new();
+        while self.pos < self.tokens.len() {
+            decls.push(self.declaration());
+        }
+        self.ensure_done();
+        Program(decls)
+    }
+
+    fn declaration(&mut self) -> Decl {
+        if self.pos >= self.tokens.len() {
+            panic!("Unexpected end of input while parsing declaration");
+        }
+
+        let Token { start, .. } = self.peek();
+        let (ty, storage_class) = self.parse_specifiers();
+        let name = self.expect_identifier();
+
+        if matches!(self.peek().kind, TokenKind::LParen) {
+            self.parse_function_declaration(start, name, ty, storage_class)
+        } else {
+            self.parse_variable_declaration(start, name, ty, storage_class)
+        }
+    }
+
+    fn parse_function_declaration(
+        &mut self,
+        start: usize,
+        name: String,
+        return_type: Type,
+        storage_class: Option<StorageClass>,
+    ) -> Decl {
+        if return_type != Type::Int && return_type != Type::Void {
+            panic!("Unsupported return type in function declaration");
+        }
         self.skip(&TokenKind::LParen);
         let params = self.parameters();
         self.skip(&TokenKind::RParen);
@@ -182,12 +327,57 @@ impl Parser {
         let end = self.index;
         let source = self.source_slice(start, end);
 
-        Stmt {
-            kind: StmtKind::FnDecl { name, params, body },
+        Decl {
+            kind: DeclKind::Function(FunctionDecl {
+                name,
+                params,
+                body,
+                storage_class,
+                return_type,
+            }),
             start,
             end,
             source,
-            r#type: return_type,
+        }
+    }
+
+    fn parse_variable_declaration(
+        &mut self,
+        start: usize,
+        name: String,
+        ty: Type,
+        storage_class: Option<StorageClass>,
+    ) -> Decl {
+        if ty == Type::Void {
+            panic!("variable '{name}' declared with void type");
+        }
+
+        let init = if self.peek().kind == TokenKind::Equal {
+            self.advance();
+            Some(self.expr())
+        } else {
+            None
+        };
+
+        self.skip(&TokenKind::Semicolon);
+
+        let end = self.index;
+        let source = self.source_slice(start, end);
+
+        let is_definition = storage_class != Some(StorageClass::Extern);
+        let decl = VariableDecl {
+            name,
+            init,
+            storage_class,
+            r#type: ty.clone(),
+            is_definition,
+        };
+
+        Decl {
+            kind: DeclKind::Variable(decl),
+            start,
+            end,
+            source,
         }
     }
 
@@ -231,47 +421,14 @@ impl Parser {
         let mut stmts = vec![];
 
         while self.peek().kind != TokenKind::RBrace {
-            if self.peek().kind == TokenKind::Int {
-                stmts.push(self.declaration());
+            if self.is_declaration_start() {
+                stmts.push(self.variable_declaration_stmt());
             } else {
                 stmts.push(self.stmt());
             }
         }
 
         stmts
-    }
-
-    fn declaration(&mut self) -> Stmt {
-        let Token { start, .. } = self.peek();
-        self.skip(&TokenKind::Int);
-
-        let name = match self.peek().kind.clone() {
-            TokenKind::Identifier(name) => {
-                self.advance();
-                name
-            }
-            kind => panic!("Expected identifier in declaration, found {kind:?}"),
-        };
-
-        let init = if self.peek().kind == TokenKind::Equal {
-            self.advance();
-            Some(self.expr())
-        } else {
-            None
-        };
-
-        self.skip(&TokenKind::Semicolon);
-
-        let end = self.index;
-        let source: String = self.source[start..end].iter().collect();
-
-        Stmt {
-            kind: StmtKind::Declaration { name, init },
-            start,
-            end,
-            source,
-            r#type: Type::Int,
-        }
     }
 
     fn stmt(&mut self) -> Stmt {
@@ -419,8 +576,8 @@ impl Parser {
         let init = if self.peek().kind == TokenKind::Semicolon {
             self.advance();
             ForInit::Expr(None)
-        } else if self.peek().kind == TokenKind::Int {
-            let decl = self.declaration();
+        } else if self.is_declaration_start() {
+            let decl = self.variable_declaration_stmt();
             ForInit::Declaration(Box::new(decl))
         } else {
             let expr = self.expr();

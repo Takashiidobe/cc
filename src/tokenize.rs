@@ -139,6 +139,12 @@ pub enum TokenKind {
     #[token("int")]
     Int,
 
+    #[token("static")]
+    Static,
+
+    #[token("extern")]
+    Extern,
+
     #[token("return")]
     Return,
 

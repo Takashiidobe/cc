@@ -1,22 +1,37 @@
-use crate::parse::{Expr, ExprKind, ForInit, Program as AstProgram, Stmt, StmtKind, Type};
+use std::collections::HashSet;
+
+use crate::parse::{
+    DeclKind, Expr, ExprKind, ForInit, FunctionDecl, Program as AstProgram, Stmt, StmtKind,
+    StorageClass, Type, VariableDecl,
+};
 
 #[derive(Debug, Clone)]
 pub struct Program {
     pub functions: Vec<Function>,
+    pub statics: Vec<StaticVariable>,
 }
 
 #[derive(Debug, Clone)]
 pub struct Function {
     pub name: String,
+    pub global: bool,
     pub params: Vec<String>,
     pub return_type: Type,
     pub instructions: Vec<Instruction>,
 }
 
 #[derive(Debug, Clone)]
+pub struct StaticVariable {
+    pub name: String,
+    pub global: bool,
+    pub init: i64,
+}
+
+#[derive(Debug, Clone)]
 pub enum Value {
     Constant(i64),
     Var(String),
+    Global(String),
 }
 
 #[derive(Debug, Clone)]
@@ -86,6 +101,7 @@ pub struct TackyGen {
     label_counter: usize,
     program: AstProgram,
     loop_stack: Vec<LoopContext>,
+    locals: HashSet<String>,
 }
 
 struct LoopContext {
@@ -130,42 +146,67 @@ impl TackyGen {
             label_counter: 0,
             program,
             loop_stack: Vec::new(),
+            locals: HashSet::new(),
         }
     }
 
     pub fn codegen(mut self) -> Program {
         let mut functions = Vec::new();
+        let mut statics = Vec::new();
 
-        for function in self.program.0.clone() {
-            let return_type = function.r#type.clone();
-            match function.kind {
-                StmtKind::FnDecl { name, params, body } => {
-                    if let Some(body) = body {
-                        functions.push(self.gen_function(&name, &params, &body, return_type));
+        let decls = std::mem::take(&mut self.program.0);
+        for decl in decls {
+            match decl.kind {
+                DeclKind::Function(func) => {
+                    if let Some(function) = self.gen_function_decl(func) {
+                        functions.push(function);
                     }
                 }
-                other => {
-                    panic!("Top-level declaration must be a function declaration, found {other:?}")
+                DeclKind::Variable(var) => {
+                    if let Some(static_var) = self.gen_static_variable(var) {
+                        statics.push(static_var);
+                    }
                 }
             }
         }
 
-        Program { functions }
+        Program { functions, statics }
+    }
+
+    fn gen_function_decl(&mut self, decl: FunctionDecl) -> Option<Function> {
+        let FunctionDecl {
+            name,
+            params,
+            body,
+            storage_class,
+            return_type,
+        } = decl;
+
+        let body = body?;
+        let global = storage_class != Some(StorageClass::Static);
+        Some(self.gen_function(name, global, params, body, return_type))
     }
 
     fn gen_function(
         &mut self,
-        name: &str,
-        params: &[String],
-        body: &[Stmt],
+        name: String,
+        global: bool,
+        params: Vec<String>,
+        body: Vec<Stmt>,
         return_type: Type,
     ) -> Function {
         debug_assert!(
             self.loop_stack.is_empty(),
             "loop stack not empty at function entry"
         );
+
+        self.locals.clear();
+        for param in &params {
+            self.locals.insert(param.clone());
+        }
+
         let mut instructions = Vec::new();
-        for stmt in body {
+        for stmt in &body {
             self.gen_stmt(stmt, &mut instructions);
         }
         debug_assert!(
@@ -173,13 +214,164 @@ impl TackyGen {
             "loop stack not empty after generating function {}",
             name
         );
+        self.locals.clear();
 
         Function {
-            name: name.to_string(),
-            params: params.to_vec(),
+            name,
+            global,
+            params,
             return_type,
             instructions,
         }
+    }
+
+    fn gen_static_variable(&mut self, decl: VariableDecl) -> Option<StaticVariable> {
+        let VariableDecl {
+            name,
+            init,
+            storage_class,
+            r#type: _,
+            is_definition,
+        } = decl;
+
+        if !is_definition {
+            return None;
+        }
+
+        if matches!(storage_class, Some(StorageClass::Extern)) {
+            return None;
+        }
+
+        let init_value = init.map(|expr| self.eval_const_expr(&expr)).unwrap_or(0);
+        let global = storage_class != Some(StorageClass::Static);
+
+        Some(StaticVariable {
+            name,
+            global,
+            init: init_value,
+        })
+    }
+
+    fn eval_const_expr(&self, expr: &Expr) -> i64 {
+        match &expr.kind {
+            ExprKind::Integer(n) => *n,
+            ExprKind::Neg(inner) => -self.eval_const_expr(inner),
+            ExprKind::BitNot(inner) => !self.eval_const_expr(inner),
+            ExprKind::Not(inner) => {
+                let value = self.eval_const_expr(inner);
+                if value == 0 { 1 } else { 0 }
+            }
+            ExprKind::Add(lhs, rhs) => self.eval_const_expr(lhs) + self.eval_const_expr(rhs),
+            ExprKind::Sub(lhs, rhs) => self.eval_const_expr(lhs) - self.eval_const_expr(rhs),
+            ExprKind::Mul(lhs, rhs) => self.eval_const_expr(lhs) * self.eval_const_expr(rhs),
+            ExprKind::Div(lhs, rhs) => {
+                let divisor = self.eval_const_expr(rhs);
+                if divisor == 0 {
+                    panic!("division by zero in static initializer");
+                }
+                self.eval_const_expr(lhs) / divisor
+            }
+            ExprKind::Rem(lhs, rhs) => {
+                let divisor = self.eval_const_expr(rhs);
+                if divisor == 0 {
+                    panic!("division by zero in static initializer");
+                }
+                self.eval_const_expr(lhs) % divisor
+            }
+            ExprKind::Equal(lhs, rhs) => {
+                if self.eval_const_expr(lhs) == self.eval_const_expr(rhs) {
+                    1
+                } else {
+                    0
+                }
+            }
+            ExprKind::NotEqual(lhs, rhs) => {
+                if self.eval_const_expr(lhs) != self.eval_const_expr(rhs) {
+                    1
+                } else {
+                    0
+                }
+            }
+            ExprKind::LessThan(lhs, rhs) => {
+                if self.eval_const_expr(lhs) < self.eval_const_expr(rhs) {
+                    1
+                } else {
+                    0
+                }
+            }
+            ExprKind::LessThanEqual(lhs, rhs) => {
+                if self.eval_const_expr(lhs) <= self.eval_const_expr(rhs) {
+                    1
+                } else {
+                    0
+                }
+            }
+            ExprKind::GreaterThan(lhs, rhs) => {
+                if self.eval_const_expr(lhs) > self.eval_const_expr(rhs) {
+                    1
+                } else {
+                    0
+                }
+            }
+            ExprKind::GreaterThanEqual(lhs, rhs) => {
+                if self.eval_const_expr(lhs) >= self.eval_const_expr(rhs) {
+                    1
+                } else {
+                    0
+                }
+            }
+            ExprKind::BitAnd(lhs, rhs) => self.eval_const_expr(lhs) & self.eval_const_expr(rhs),
+            ExprKind::BitOr(lhs, rhs) => self.eval_const_expr(lhs) | self.eval_const_expr(rhs),
+            ExprKind::Xor(lhs, rhs) => self.eval_const_expr(lhs) ^ self.eval_const_expr(rhs),
+            ExprKind::LeftShift(lhs, rhs) => {
+                let shift = self.eval_const_expr(rhs) as u32;
+                self.eval_const_expr(lhs) << shift
+            }
+            ExprKind::RightShift(lhs, rhs) => {
+                let shift = self.eval_const_expr(rhs) as u32;
+                self.eval_const_expr(lhs) >> shift
+            }
+            ExprKind::And(lhs, rhs) => {
+                let left = self.eval_const_expr(lhs);
+                if left == 0 {
+                    0
+                } else if self.eval_const_expr(rhs) != 0 {
+                    1
+                } else {
+                    0
+                }
+            }
+            ExprKind::Or(lhs, rhs) => {
+                let left = self.eval_const_expr(lhs);
+                if left != 0 {
+                    1
+                } else if self.eval_const_expr(rhs) != 0 {
+                    1
+                } else {
+                    0
+                }
+            }
+            ExprKind::Conditional(cond, then_expr, else_expr) => {
+                if self.eval_const_expr(cond) != 0 {
+                    self.eval_const_expr(then_expr)
+                } else {
+                    self.eval_const_expr(else_expr)
+                }
+            }
+            _ => panic!("non-constant expression in static initializer"),
+        }
+    }
+
+    fn value_for_variable(&self, name: &str) -> Value {
+        if self.is_local(name) {
+            Value::Var(name.to_string())
+        } else {
+            Value::Global(name.to_string())
+        }
+    }
+
+    fn is_local(&self, name: &str) -> bool {
+        self.locals.contains(name)
     }
 
     fn gen_stmt(&mut self, stmt: &Stmt, instructions: &mut Vec<Instruction>) {
@@ -330,26 +522,36 @@ impl TackyGen {
                 let context = self.loop_context(loop_id);
                 instructions.push(Instruction::Jump(context.continue_label.clone()));
             }
-            StmtKind::Declaration { name, init } => {
-                if let Some(init_expr) = init {
-                    let value = self.gen_expr(init_expr, instructions);
-                    instructions.push(Instruction::Copy {
-                        src: value,
-                        dst: Value::Var(name.clone()),
-                    });
+            StmtKind::Declaration(decl) => {
+                match decl.storage_class {
+                    None => {
+                        if decl.is_definition {
+                            if let Some(init_expr) = &decl.init {
+                                let value = self.gen_expr(init_expr, instructions);
+                                instructions.push(Instruction::Copy {
+                                    src: value,
+                                    dst: Value::Var(decl.name.clone()),
+                                });
+                            }
+                            self.locals.insert(decl.name.clone());
+                        }
+                    }
+                    Some(StorageClass::Extern) => {
+                        // extern declarations do not produce code and remain global
+                    }
+                    Some(StorageClass::Static) => {
+                        panic!("static local variables are not supported");
+                    }
                 }
             }
             StmtKind::Null => {}
-            StmtKind::FnDecl { .. } => {
-                panic!("Nested function declarations are not supported in this stage");
-            }
         }
     }
 
     fn gen_expr(&mut self, expr: &Expr, instructions: &mut Vec<Instruction>) -> Value {
         match &expr.kind {
             ExprKind::Integer(n) => Value::Constant(*n),
-            ExprKind::Var(name) => Value::Var(name.clone()),
+            ExprKind::Var(name) => self.value_for_variable(name),
             ExprKind::FunctionCall(name, args) => self.gen_function_call(name, args, instructions),
             ExprKind::Neg(rhs) => self.gen_unary_expr(UnaryOp::Negate, rhs, instructions),
             ExprKind::BitNot(rhs) => self.gen_unary_expr(UnaryOp::Complement, rhs, instructions),
@@ -450,11 +652,12 @@ impl TackyGen {
                     ExprKind::Var(name) => name.clone(),
                     _ => panic!("Assignment target must be a variable"),
                 };
+                let target = self.value_for_variable(&name);
                 instructions.push(Instruction::Copy {
                     src: rhs_value,
-                    dst: Value::Var(name.clone()),
+                    dst: target.clone(),
                 });
-                Value::Var(name)
+                target
             }
         }
     }
@@ -605,12 +808,13 @@ impl TackyGen {
             ExprKind::Var(name) => name.clone(),
             _ => panic!("Increment/decrement target must be a variable"),
         };
+        let target = self.value_for_variable(&name);
 
         let original_value = if is_post {
             let tmp_name = self.fresh_tmp();
             let tmp = Value::Var(tmp_name.clone());
             instructions.push(Instruction::Copy {
-                src: Value::Var(name.clone()),
+                src: target.clone(),
                 dst: tmp.clone(),
             });
             Some(tmp)
@@ -622,19 +826,19 @@ impl TackyGen {
         let updated_tmp = Value::Var(updated_tmp_name.clone());
         instructions.push(Instruction::Binary {
             op,
-            src1: Value::Var(name.clone()),
+            src1: target.clone(),
             src2: Value::Constant(1),
             dst: updated_tmp.clone(),
         });
         instructions.push(Instruction::Copy {
             src: updated_tmp.clone(),
-            dst: Value::Var(name.clone()),
+            dst: target.clone(),
         });
 
         if let Some(original) = original_value {
             original
         } else {
-            Value::Var(name)
+            target
         }
     }
 }

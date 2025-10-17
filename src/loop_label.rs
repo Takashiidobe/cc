@@ -1,4 +1,4 @@
-use crate::parse::{ForInit, Program, Stmt, StmtKind};
+use crate::parse::{Decl, DeclKind, ForInit, FunctionDecl, Program, Stmt, StmtKind};
 
 #[derive(Default)]
 pub struct LoopLabeler {
@@ -12,12 +12,58 @@ impl LoopLabeler {
     }
 
     pub fn label_program(mut self, program: Program) -> Program {
-        let functions = program
+        let decls = program
             .0
             .into_iter()
-            .map(|stmt| self.label_stmt(stmt))
+            .map(|decl| self.label_decl(decl))
             .collect();
-        Program(functions)
+        Program(decls)
+    }
+
+    fn label_decl(&mut self, decl: Decl) -> Decl {
+        let Decl {
+            kind,
+            start,
+            end,
+            source,
+        } = decl;
+
+        let kind = match kind {
+            DeclKind::Function(func) => DeclKind::Function(self.label_function(func)),
+            DeclKind::Variable(var) => DeclKind::Variable(var),
+        };
+
+        Decl {
+            kind,
+            start,
+            end,
+            source,
+        }
+    }
+
+    fn label_function(&mut self, decl: FunctionDecl) -> FunctionDecl {
+        let FunctionDecl {
+            name,
+            params,
+            body,
+            storage_class,
+            return_type,
+        } = decl;
+
+        let body = body.map(|stmts| {
+            stmts
+                .into_iter()
+                .map(|stmt| self.label_stmt(stmt))
+                .collect()
+        });
+
+        FunctionDecl {
+            name,
+            params,
+            body,
+            storage_class,
+            return_type,
+        }
     }
 
     fn label_stmt(&mut self, stmt: Stmt) -> Stmt {
@@ -38,16 +84,7 @@ impl LoopLabeler {
                     .map(|stmt| self.label_stmt(stmt))
                     .collect(),
             ),
-            StmtKind::FnDecl { name, params, body } => {
-                let body = body.map(|stmts| {
-                    stmts
-                        .into_iter()
-                        .map(|stmt| self.label_stmt(stmt))
-                        .collect()
-                });
-                StmtKind::FnDecl { name, params, body }
-            }
-            StmtKind::Declaration { name, init } => StmtKind::Declaration { name, init },
+            StmtKind::Declaration(decl) => StmtKind::Declaration(decl),
             StmtKind::Null => StmtKind::Null,
             StmtKind::If {
                 condition,

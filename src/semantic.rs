@@ -1,6 +1,9 @@
 use std::collections::HashMap;
 
-use crate::parse::{Expr, ExprKind, ForInit, Program, Stmt, StmtKind};
+use crate::parse::{
+    Decl, DeclKind, Expr, ExprKind, ForInit, FunctionDecl, Program, Stmt, StmtKind, StorageClass,
+    VariableDecl,
+};
 
 #[derive(Default)]
 pub struct SemanticAnalyzer {
@@ -14,12 +17,90 @@ impl SemanticAnalyzer {
     }
 
     pub fn analyze_program(mut self, program: Program) -> Program {
-        let functions = program
+        self.enter_scope();
+
+        for decl in &program.0 {
+            if let DeclKind::Variable(var) = &decl.kind {
+                self.insert(var.name.clone(), var.name.clone());
+            }
+        }
+
+        let decls = program
             .0
             .into_iter()
-            .map(|stmt| self.analyze_stmt(stmt))
+            .map(|decl| self.analyze_decl(decl))
             .collect();
-        Program(functions)
+        self.exit_scope();
+        Program(decls)
+    }
+
+    fn analyze_decl(&mut self, decl: Decl) -> Decl {
+        let Decl {
+            kind,
+            start,
+            end,
+            source,
+        } = decl;
+
+        let kind = match kind {
+            DeclKind::Function(func) => DeclKind::Function(self.analyze_function(func)),
+            DeclKind::Variable(var) => DeclKind::Variable(self.analyze_global_variable(var)),
+        };
+
+        Decl {
+            kind,
+            start,
+            end,
+            source,
+        }
+    }
+
+    fn analyze_function(&mut self, decl: FunctionDecl) -> FunctionDecl {
+        let FunctionDecl {
+            name,
+            params,
+            body,
+            storage_class,
+            return_type,
+        } = decl;
+
+        match body {
+            Some(body_stmts) => {
+                self.enter_scope();
+                let mut unique_params = Vec::new();
+                for param in params {
+                    let unique = self.fresh_name(&param);
+                    self.insert(param, unique.clone());
+                    unique_params.push(unique);
+                }
+                let body = body_stmts
+                    .into_iter()
+                    .map(|stmt| self.analyze_stmt(stmt))
+                    .collect();
+                self.exit_scope();
+                FunctionDecl {
+                    name,
+                    params: unique_params,
+                    body: Some(body),
+                    storage_class,
+                    return_type,
+                }
+            }
+            None => FunctionDecl {
+                name,
+                params,
+                body: None,
+                storage_class,
+                return_type,
+            },
+        }
+    }
+
+    fn analyze_global_variable(&mut self, mut decl: VariableDecl) -> VariableDecl {
+        let init = decl.init.take().map(|expr| self.analyze_expr(expr));
+        decl.init = init;
+        self.insert(decl.name.clone(), decl.name.clone());
+        decl
     }
 
     fn analyze_stmt(&mut self, stmt: Stmt) -> Stmt {
@@ -40,40 +121,9 @@ impl SemanticAnalyzer {
                 self.exit_scope();
                 StmtKind::Compound(stmts)
             }
-            StmtKind::FnDecl { name, params, body } => match body {
-                Some(body_stmts) => {
-                    self.enter_scope();
-                    let mut unique_params = Vec::new();
-                    for param in params {
-                        let unique = self.fresh_name(&param);
-                        self.insert(param, unique.clone());
-                        unique_params.push(unique);
-                    }
-                    let body = body_stmts
-                        .into_iter()
-                        .map(|s| self.analyze_stmt(s))
-                        .collect();
-                    self.exit_scope();
-                    StmtKind::FnDecl {
-                        name,
-                        params: unique_params,
-                        body: Some(body),
-                    }
-                }
-                None => StmtKind::FnDecl {
-                    name,
-                    params,
-                    body: None,
-                },
-            },
-            StmtKind::Declaration { name, init } => {
-                let init = init.map(|expr| self.analyze_expr(expr));
-                let unique_name = self.fresh_name(&name);
-                self.insert(name, unique_name.clone());
-                StmtKind::Declaration {
-                    name: unique_name,
-                    init,
-                }
+            StmtKind::Declaration(decl) => {
+                let decl = self.analyze_local_variable_decl(decl);
+                StmtKind::Declaration(decl)
             }
             StmtKind::Null => StmtKind::Null,
             StmtKind::If {
@@ -134,6 +184,28 @@ impl SemanticAnalyzer {
             end,
             source,
             r#type,
+        }
+    }
+
+    fn analyze_local_variable_decl(&mut self, mut decl: VariableDecl) -> VariableDecl {
+        let init = decl.init.take().map(|expr| self.analyze_expr(expr));
+        decl.init = init;
+
+        match decl.storage_class {
+            Some(StorageClass::Extern) => {
+                self.insert(decl.name.clone(), decl.name.clone());
+                decl
+            }
+            Some(StorageClass::Static) => {
+                panic!("static local variables are not supported yet");
+            }
+            None => {
+                let original = decl.name.clone();
+                let unique = self.fresh_name(&original);
+                self.insert(original, unique.clone());
+                decl.name = unique;
+                decl
+            }
         }
     }
 
