@@ -46,8 +46,11 @@ pub enum ExprKind {
 pub enum StmtKind {
     Expr(Expr),
     Return(Expr),
-    Block(Vec<Stmt>),
-    Declaration { name: String, init: Option<Expr> },
+    Compound(Vec<Stmt>),
+    Declaration {
+        name: String,
+        init: Option<Expr>,
+    },
     Null,
     If {
         condition: Expr,
@@ -233,7 +236,7 @@ impl Parser {
         let end = self.index;
         let source: String = self.source[start..end].iter().collect();
         Stmt {
-            kind: StmtKind::Block(stmts),
+            kind: StmtKind::Compound(stmts),
             start,
             end,
             source,

@@ -25,11 +25,11 @@ impl SemanticAnalyzer {
         let kind = match kind {
             StmtKind::Return(expr) => StmtKind::Return(self.analyze_expr(expr)),
             StmtKind::Expr(expr) => StmtKind::Expr(self.analyze_expr(expr)),
-            StmtKind::Block(stmts) => {
+            StmtKind::Compound(stmts) => {
                 self.enter_scope();
                 let stmts = stmts.into_iter().map(|s| self.analyze_stmt(s)).collect();
                 self.exit_scope();
-                StmtKind::Block(stmts)
+                StmtKind::Compound(stmts)
             }
             StmtKind::FnDecl(name, body) => {
                 self.enter_scope();

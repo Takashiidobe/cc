@@ -137,7 +137,7 @@ impl TackyGen {
             StmtKind::Expr(expr) => {
                 let _ = self.gen_expr(expr, instructions);
             }
-            StmtKind::Block(stmts) => {
+            StmtKind::Compound(stmts) => {
                 for stmt in stmts {
                     self.gen_stmt(stmt, instructions);
                 }
