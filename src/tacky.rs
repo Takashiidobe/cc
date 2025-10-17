@@ -1,4 +1,4 @@
-use crate::parse::{Expr, ExprKind, ForInit, Program as AstProgram, Stmt, StmtKind};
+use crate::parse::{Expr, ExprKind, ForInit, Program as AstProgram, Stmt, StmtKind, Type};
 
 #[derive(Debug, Clone)]
 pub struct Program {
@@ -9,6 +9,7 @@ pub struct Program {
 pub struct Function {
     pub name: String,
     pub params: Vec<String>,
+    pub return_type: Type,
     pub instructions: Vec<Instruction>,
 }
 
@@ -136,10 +137,11 @@ impl TackyGen {
         let mut functions = Vec::new();
 
         for function in self.program.0.clone() {
+            let return_type = function.r#type.clone();
             match function.kind {
                 StmtKind::FnDecl { name, params, body } => {
                     if let Some(body) = body {
-                        functions.push(self.gen_function(&name, &params, &body));
+                        functions.push(self.gen_function(&name, &params, &body, return_type));
                     }
                 }
                 other => {
@@ -151,7 +153,13 @@ impl TackyGen {
         Program { functions }
     }
 
-    fn gen_function(&mut self, name: &str, params: &[String], body: &[Stmt]) -> Function {
+    fn gen_function(
+        &mut self,
+        name: &str,
+        params: &[String],
+        body: &[Stmt],
+        return_type: Type,
+    ) -> Function {
         debug_assert!(
             self.loop_stack.is_empty(),
             "loop stack not empty at function entry"
@@ -169,6 +177,7 @@ impl TackyGen {
         Function {
             name: name.to_string(),
             params: params.to_vec(),
+            return_type,
             instructions,
         }
     }

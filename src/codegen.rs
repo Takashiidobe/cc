@@ -1,6 +1,7 @@
 use std::collections::{BTreeSet, HashMap};
 use std::io::{Result, Write};
 
+use crate::parse::Type;
 use crate::tacky::{BinaryOp, Function, Instruction, Program as TackyProgram, UnaryOp, Value};
 
 pub struct Codegen<W: Write> {
@@ -55,7 +56,10 @@ impl<W: Write> Codegen<W> {
         for instr in &function.instructions {
             self.emit_instruction(instr)?;
         }
-        Ok(())
+        if matches!(function.return_type, Type::Int) {
+            writeln!(self.buf, "  mov $0, %rax")?;
+        }
+        self.emit_epilogue()
     }
 
     fn collect_stack_slots(&mut self, function: &Function) {
@@ -102,11 +106,8 @@ impl<W: Write> Codegen<W> {
             self.stack_map.insert(name, -(offset as i64));
         }
         let mut frame_size = offset as i64;
-        if frame_size % 16 != 8 {
-            frame_size += 8;
-        }
-        if frame_size == 0 {
-            frame_size = 8;
+        if frame_size % 16 != 0 {
+            frame_size += 16 - (frame_size % 16);
         }
         self.frame_size = frame_size;
     }
