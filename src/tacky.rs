@@ -1,4 +1,4 @@
-use crate::parse::{Expr, ExprKind, Program as AstProgram, Stmt, StmtKind};
+use crate::parse::{Expr, ExprKind, ForInit, Program as AstProgram, Stmt, StmtKind};
 
 #[derive(Debug, Clone)]
 pub struct Program {
@@ -78,6 +78,13 @@ pub struct TackyGen {
     tmp_counter: usize,
     label_counter: usize,
     program: AstProgram,
+    loop_stack: Vec<LoopContext>,
+}
+
+struct LoopContext {
+    id: usize,
+    break_label: String,
+    continue_label: String,
 }
 
 impl TackyGen {
@@ -93,11 +100,29 @@ impl TackyGen {
         name
     }
 
+    fn push_loop_context(&mut self, context: LoopContext) {
+        self.loop_stack.push(context);
+    }
+
+    fn pop_loop_context(&mut self, expected_id: usize) {
+        let context = self.loop_stack.pop().expect("loop stack underflow");
+        debug_assert_eq!(context.id, expected_id, "loop id mismatch on pop");
+    }
+
+    fn loop_context(&self, id: usize) -> &LoopContext {
+        self.loop_stack
+            .iter()
+            .rev()
+            .find(|ctx| ctx.id == id)
+            .unwrap_or_else(|| panic!("no loop context for id {id}"))
+    }
+
     pub fn new(program: AstProgram) -> Self {
         Self {
             tmp_counter: 0,
             label_counter: 0,
             program,
+            loop_stack: Vec::new(),
         }
     }
 
@@ -168,6 +193,113 @@ impl TackyGen {
                     self.gen_stmt(then_branch, instructions);
                     instructions.push(Instruction::Label(end_label));
                 }
+            }
+            StmtKind::While {
+                condition,
+                body,
+                loop_id,
+            } => {
+                let loop_id = loop_id.expect("while statement missing loop id");
+                let cond_label = self.fresh_label("while.cond");
+                let end_label = self.fresh_label("while.end");
+                instructions.push(Instruction::Label(cond_label.clone()));
+                let cond_val = self.gen_expr(condition, instructions);
+                instructions.push(Instruction::JumpIfZero {
+                    condition: cond_val,
+                    target: end_label.clone(),
+                });
+                let context = LoopContext {
+                    id: loop_id,
+                    break_label: end_label.clone(),
+                    continue_label: cond_label.clone(),
+                };
+                self.push_loop_context(context);
+                self.gen_stmt(body, instructions);
+                self.pop_loop_context(loop_id);
+                instructions.push(Instruction::Jump(cond_label));
+                instructions.push(Instruction::Label(end_label));
+            }
+            StmtKind::DoWhile {
+                body,
+                condition,
+                loop_id,
+            } => {
+                let loop_id = loop_id.expect("do-while statement missing loop id");
+                let body_label = self.fresh_label("do.body");
+                let cond_label = self.fresh_label("do.cond");
+                let end_label = self.fresh_label("do.end");
+                instructions.push(Instruction::Label(body_label.clone()));
+                let context = LoopContext {
+                    id: loop_id,
+                    break_label: end_label.clone(),
+                    continue_label: cond_label.clone(),
+                };
+                self.push_loop_context(context);
+                self.gen_stmt(body, instructions);
+                instructions.push(Instruction::Label(cond_label.clone()));
+                let cond_val = self.gen_expr(condition, instructions);
+                instructions.push(Instruction::JumpIfNotZero {
+                    condition: cond_val,
+                    target: body_label,
+                });
+                self.pop_loop_context(loop_id);
+                instructions.push(Instruction::Label(end_label));
+            }
+            StmtKind::For {
+                init,
+                condition,
+                post,
+                body,
+                loop_id,
+            } => {
+                let loop_id = loop_id.expect("for statement missing loop id");
+                match init {
+                    ForInit::Declaration(decl) => {
+                        self.gen_stmt(decl, instructions);
+                    }
+                    ForInit::Expr(Some(expr)) => {
+                        let _ = self.gen_expr(expr, instructions);
+                    }
+                    ForInit::Expr(None) => {}
+                }
+                let cond_label = self.fresh_label("for.cond");
+                let end_label = self.fresh_label("for.end");
+                let post_label = post.as_ref().map(|_| self.fresh_label("for.post"));
+                instructions.push(Instruction::Label(cond_label.clone()));
+                if let Some(cond) = condition {
+                    let cond_val = self.gen_expr(cond, instructions);
+                    instructions.push(Instruction::JumpIfZero {
+                        condition: cond_val,
+                        target: end_label.clone(),
+                    });
+                }
+                let continue_label = post_label.clone().unwrap_or_else(|| cond_label.clone());
+                let context = LoopContext {
+                    id: loop_id,
+                    break_label: end_label.clone(),
+                    continue_label: continue_label.clone(),
+                };
+                self.push_loop_context(context);
+                self.gen_stmt(body, instructions);
+                if let Some(post_expr) = post {
+                    if let Some(label) = &post_label {
+                        instructions.push(Instruction::Label(label.clone()));
+                    }
+                    let _ = self.gen_expr(post_expr, instructions);
+                }
+                self.pop_loop_context(loop_id);
+                instructions.push(Instruction::Jump(cond_label));
+                instructions.push(Instruction::Label(end_label));
+            }
+            StmtKind::Break { loop_id } => {
+                let loop_id = loop_id.expect("break statement missing loop id");
+                let context = self.loop_context(loop_id);
+                instructions.push(Instruction::Jump(context.break_label.clone()));
+            }
+            StmtKind::Continue { loop_id } => {
+                let loop_id = loop_id.expect("continue statement missing loop id");
+                let context = self.loop_context(loop_id);
+                instructions.push(Instruction::Jump(context.continue_label.clone()));
             }
             StmtKind::Declaration { name, init } => {
                 if let Some(init_expr) = init {

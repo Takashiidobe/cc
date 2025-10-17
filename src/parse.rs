@@ -57,8 +57,37 @@ pub enum StmtKind {
         then_branch: Box<Stmt>,
         else_branch: Option<Box<Stmt>>,
     },
+    While {
+        condition: Expr,
+        body: Box<Stmt>,
+        loop_id: Option<usize>,
+    },
+    DoWhile {
+        body: Box<Stmt>,
+        condition: Expr,
+        loop_id: Option<usize>,
+    },
+    For {
+        init: ForInit,
+        condition: Option<Expr>,
+        post: Option<Expr>,
+        body: Box<Stmt>,
+        loop_id: Option<usize>,
+    },
+    Break {
+        loop_id: Option<usize>,
+    },
+    Continue {
+        loop_id: Option<usize>,
+    },
     // return type, name, args (not yet), Body
     FnDecl(String, Vec<Stmt>),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ForInit {
+    Declaration(Box<Stmt>),
+    Expr(Option<Expr>),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -211,6 +240,11 @@ impl Parser {
                 }
             }
             TokenKind::If => self.if_stmt(),
+            TokenKind::While => self.while_stmt(),
+            TokenKind::Do => self.do_while_stmt(),
+            TokenKind::For => self.for_stmt(),
+            TokenKind::Break => self.break_stmt(),
+            TokenKind::Continue => self.continue_stmt(),
             _ => {
                 let expr = self.expr();
                 self.skip(&TokenKind::Semicolon);
@@ -228,6 +262,34 @@ impl Parser {
         }
     }
 
+    fn break_stmt(&mut self) -> Stmt {
+        let Token { start, .. } = self.peek();
+        self.advance();
+        self.skip(&TokenKind::Semicolon);
+        let end = self.index;
+        Stmt {
+            kind: StmtKind::Break { loop_id: None },
+            start,
+            end,
+            source: self.source_slice(start, end),
+            r#type: Type::Void,
+        }
+    }
+
+    fn continue_stmt(&mut self) -> Stmt {
+        let Token { start, .. } = self.peek();
+        self.advance();
+        self.skip(&TokenKind::Semicolon);
+        let end = self.index;
+        Stmt {
+            kind: StmtKind::Continue { loop_id: None },
+            start,
+            end,
+            source: self.source_slice(start, end),
+            r#type: Type::Void,
+        }
+    }
+
     fn block(&mut self) -> Stmt {
         let Token { start, .. } = self.peek();
         self.skip(&TokenKind::LBrace);
@@ -240,6 +302,101 @@ impl Parser {
             start,
             end,
             source,
+            r#type: Type::Void,
+        }
+    }
+
+    fn while_stmt(&mut self) -> Stmt {
+        let Token { start, .. } = self.peek();
+        self.advance(); // consume while
+        self.skip(&TokenKind::LParen);
+        let condition = self.expr();
+        self.skip(&TokenKind::RParen);
+        let body_stmt = self.stmt();
+        let end = body_stmt.end;
+        Stmt {
+            kind: StmtKind::While {
+                condition,
+                body: Box::new(body_stmt),
+                loop_id: None,
+            },
+            start,
+            end,
+            source: self.source_slice(start, end),
+            r#type: Type::Void,
+        }
+    }
+
+    fn do_while_stmt(&mut self) -> Stmt {
+        let Token { start, .. } = self.peek();
+        self.advance(); // consume do
+        let body_stmt = self.stmt();
+        self.skip(&TokenKind::While);
+        self.skip(&TokenKind::LParen);
+        let condition = self.expr();
+        self.skip(&TokenKind::RParen);
+        self.skip(&TokenKind::Semicolon);
+        let end = self.index;
+        Stmt {
+            kind: StmtKind::DoWhile {
+                body: Box::new(body_stmt),
+                condition,
+                loop_id: None,
+            },
+            start,
+            end,
+            source: self.source_slice(start, end),
+            r#type: Type::Void,
+        }
+    }
+
+    fn for_stmt(&mut self) -> Stmt {
+        let Token { start, .. } = self.peek();
+        self.advance(); // consume for
+        self.skip(&TokenKind::LParen);
+
+        let init = if self.peek().kind == TokenKind::Semicolon {
+            self.advance();
+            ForInit::Expr(None)
+        } else if self.peek().kind == TokenKind::Int {
+            let decl = self.declaration();
+            ForInit::Declaration(Box::new(decl))
+        } else {
+            let expr = self.expr();
+            self.skip(&TokenKind::Semicolon);
+            ForInit::Expr(Some(expr))
+        };
+
+        let condition = if self.peek().kind == TokenKind::Semicolon {
+            self.advance();
+            None
+        } else {
+            let expr = self.expr();
+            self.skip(&TokenKind::Semicolon);
+            Some(expr)
+        };
+
+        let post = if self.peek().kind == TokenKind::RParen {
+            None
+        } else {
+            Some(self.expr())
+        };
+
+        self.skip(&TokenKind::RParen);
+        let body_stmt = self.stmt();
+        let end = body_stmt.end;
+
+        Stmt {
+            kind: StmtKind::For {
+                init,
+                condition,
+                post,
+                body: Box::new(body_stmt),
+                loop_id: None,
+            },
+            start,
+            end,
+            source: self.source_slice(start, end),
             r#type: Type::Void,
         }
     }

@@ -2,8 +2,8 @@ use std::fs;
 
 use anyhow::Error;
 use cc::{
-    cli::Args, codegen::Codegen, parse::Parser, semantic::SemanticAnalyzer, tacky::TackyGen,
-    tokenize::tokenize,
+    cli::Args, codegen::Codegen, loop_label::LoopLabeler, parse::Parser,
+    semantic::SemanticAnalyzer, tacky::TackyGen, tokenize::tokenize,
 };
 use clap::Parser as _;
 
@@ -36,9 +36,11 @@ fn main() -> anyhow::Result<(), Error> {
         let mut parser = Parser::new(source.chars().collect(), tokens);
         let ast = parser.parse();
         eprintln!("{:?}", &ast);
-        let analyzed_ast = SemanticAnalyzer::default().analyze_program(ast);
+        let analyzed_ast = SemanticAnalyzer::new().analyze_program(ast);
         eprintln!("{:?}", &analyzed_ast);
-        let tacky = TackyGen::new(analyzed_ast);
+        let labeled_ast = LoopLabeler::new().label_program(analyzed_ast);
+        eprintln!("{:?}", &labeled_ast);
+        let tacky = TackyGen::new(labeled_ast);
         let tacky_program = tacky.codegen();
         let mut codegen = Codegen::new(std::io::stdout());
         codegen.lower(&tacky_program)?;

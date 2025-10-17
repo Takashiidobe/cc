@@ -148,6 +148,21 @@ pub enum TokenKind {
     #[token("else")]
     Else,
 
+    #[token("while")]
+    While,
+
+    #[token("do")]
+    Do,
+
+    #[token("for")]
+    For,
+
+    #[token("break")]
+    Break,
+
+    #[token("continue")]
+    Continue,
+
     #[token("?")]
     Question,
 

@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::parse::{Expr, ExprKind, Program, Stmt, StmtKind};
+use crate::parse::{Expr, ExprKind, ForInit, Program, Stmt, StmtKind};
 
 #[derive(Default)]
 pub struct SemanticAnalyzer {
@@ -9,6 +9,10 @@ pub struct SemanticAnalyzer {
 }
 
 impl SemanticAnalyzer {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
     pub fn analyze_program(mut self, program: Program) -> Program {
         Program(self.analyze_stmt(program.0))
     }
@@ -56,6 +60,47 @@ impl SemanticAnalyzer {
                 then_branch: Box::new(self.analyze_stmt(*then_branch)),
                 else_branch: else_branch.map(|stmt| Box::new(self.analyze_stmt(*stmt))),
             },
+            StmtKind::While {
+                condition,
+                body,
+                loop_id,
+            } => StmtKind::While {
+                condition: self.analyze_expr(condition),
+                body: Box::new(self.analyze_stmt(*body)),
+                loop_id,
+            },
+            StmtKind::DoWhile {
+                body,
+                condition,
+                loop_id,
+            } => StmtKind::DoWhile {
+                body: Box::new(self.analyze_stmt(*body)),
+                condition: self.analyze_expr(condition),
+                loop_id,
+            },
+            StmtKind::For {
+                init,
+                condition,
+                post,
+                body,
+                loop_id,
+            } => {
+                self.enter_scope();
+                let init = self.analyze_for_init(init);
+                let condition = condition.map(|expr| self.analyze_expr(expr));
+                let post = post.map(|expr| self.analyze_expr(expr));
+                let body = Box::new(self.analyze_stmt(*body));
+                self.exit_scope();
+                StmtKind::For {
+                    init,
+                    condition,
+                    post,
+                    body,
+                    loop_id,
+                }
+            }
+            StmtKind::Break { loop_id } => StmtKind::Break { loop_id },
+            StmtKind::Continue { loop_id } => StmtKind::Continue { loop_id },
         };
 
         Stmt {
@@ -188,6 +233,16 @@ impl SemanticAnalyzer {
             end,
             source,
             r#type,
+        }
+    }
+
+    fn analyze_for_init(&mut self, init: ForInit) -> ForInit {
+        match init {
+            ForInit::Declaration(decl) => {
+                let decl_stmt = self.analyze_stmt(*decl);
+                ForInit::Declaration(Box::new(decl_stmt))
+            }
+            ForInit::Expr(expr) => ForInit::Expr(expr.map(|e| self.analyze_expr(e))),
         }
     }
 
