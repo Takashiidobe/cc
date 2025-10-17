@@ -142,6 +142,15 @@ pub enum TokenKind {
     #[token("return")]
     Return,
 
+    #[token("if")]
+    If,
+
+    #[token("else")]
+    Else,
+
+    #[token("?")]
+    Question,
+
     #[regex(r"([0-9]+)", |lex| lex.slice().parse::<i64>().unwrap(), priority = 5)]
     Integer(i64),
 

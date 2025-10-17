@@ -142,6 +142,33 @@ impl TackyGen {
                     self.gen_stmt(stmt, instructions);
                 }
             }
+            StmtKind::If {
+                condition,
+                then_branch,
+                else_branch,
+            } => {
+                let cond_val = self.gen_expr(condition, instructions);
+                let end_label = self.fresh_label("if.end");
+                if let Some(else_branch) = else_branch {
+                    let else_label = self.fresh_label("if.else");
+                    instructions.push(Instruction::JumpIfZero {
+                        condition: cond_val,
+                        target: else_label.clone(),
+                    });
+                    self.gen_stmt(then_branch, instructions);
+                    instructions.push(Instruction::Jump(end_label.clone()));
+                    instructions.push(Instruction::Label(else_label));
+                    self.gen_stmt(else_branch, instructions);
+                    instructions.push(Instruction::Label(end_label));
+                } else {
+                    instructions.push(Instruction::JumpIfZero {
+                        condition: cond_val,
+                        target: end_label.clone(),
+                    });
+                    self.gen_stmt(then_branch, instructions);
+                    instructions.push(Instruction::Label(end_label));
+                }
+            }
             StmtKind::Declaration { name, init } => {
                 if let Some(init_expr) = init {
                     let value = self.gen_expr(init_expr, instructions);
@@ -224,6 +251,35 @@ impl TackyGen {
             }
             ExprKind::PostDecrement(expr) => {
                 self.gen_inc_dec(expr, BinaryOp::Subtract, true, instructions)
+            }
+            ExprKind::Conditional(cond, then_expr, else_expr) => {
+                let result_tmp = self.fresh_tmp();
+                let result = Value::Var(result_tmp.clone());
+                let false_label = self.fresh_label("cond.false");
+                let end_label = self.fresh_label("cond.end");
+
+                let condition_value = self.gen_expr(cond, instructions);
+                instructions.push(Instruction::JumpIfZero {
+                    condition: condition_value,
+                    target: false_label.clone(),
+                });
+
+                let then_value = self.gen_expr(then_expr, instructions);
+                instructions.push(Instruction::Copy {
+                    src: then_value,
+                    dst: result.clone(),
+                });
+                instructions.push(Instruction::Jump(end_label.clone()));
+
+                instructions.push(Instruction::Label(false_label));
+                let else_value = self.gen_expr(else_expr, instructions);
+                instructions.push(Instruction::Copy {
+                    src: else_value,
+                    dst: result.clone(),
+                });
+                instructions.push(Instruction::Label(end_label));
+
+                Value::Var(result_tmp)
             }
             ExprKind::Assignment(lhs, rhs) => {
                 let rhs_value = self.gen_expr(rhs, instructions);

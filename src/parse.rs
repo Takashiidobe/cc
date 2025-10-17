@@ -9,6 +9,7 @@ pub enum ExprKind {
     Var(String),
     Neg(Box<Expr>),
     BitNot(Box<Expr>),
+    Conditional(Box<Expr>, Box<Expr>, Box<Expr>),
 
     Add(Box<Expr>, Box<Expr>),
     Sub(Box<Expr>, Box<Expr>),
@@ -48,6 +49,11 @@ pub enum StmtKind {
     Block(Vec<Stmt>),
     Declaration { name: String, init: Option<Expr> },
     Null,
+    If {
+        condition: Expr,
+        then_branch: Box<Stmt>,
+        else_branch: Option<Box<Stmt>>,
+    },
     // return type, name, args (not yet), Body
     FnDecl(String, Vec<Stmt>),
 }
@@ -201,6 +207,7 @@ impl Parser {
                     r#type: Type::Void,
                 }
             }
+            TokenKind::If => self.if_stmt(),
             _ => {
                 let expr = self.expr();
                 self.skip(&TokenKind::Semicolon);
@@ -234,12 +241,44 @@ impl Parser {
         }
     }
 
+    fn if_stmt(&mut self) -> Stmt {
+        let Token { start, .. } = self.peek();
+        self.advance(); // consume if
+        self.skip(&TokenKind::LParen);
+        let condition = self.expr();
+        self.skip(&TokenKind::RParen);
+        let then_branch = self.stmt();
+        let else_branch = if self.peek().kind == TokenKind::Else {
+            self.advance();
+            Some(Box::new(self.stmt()))
+        } else {
+            None
+        };
+        let end = if let Some(ref else_stmt) = else_branch {
+            else_stmt.end
+        } else {
+            then_branch.end
+        };
+        let source = self.source_slice(start, end);
+        Stmt {
+            kind: StmtKind::If {
+                condition,
+                then_branch: Box::new(then_branch),
+                else_branch,
+            },
+            start,
+            end,
+            source,
+            r#type: Type::Void,
+        }
+    }
+
     fn expr(&mut self) -> Expr {
         self.assign()
     }
 
     fn assign(&mut self) -> Expr {
-        let lhs = self.or();
+        let lhs = self.conditional();
 
         let token_kind = self.peek().kind.clone();
         match token_kind {
@@ -264,6 +303,32 @@ impl Parser {
                 self.make_assignment_expr(lhs, compound_rhs)
             }
             _ => lhs,
+        }
+    }
+
+    fn conditional(&mut self) -> Expr {
+        let condition = self.or();
+
+        if self.peek().kind == TokenKind::Question {
+            self.advance();
+            let then_expr = self.assign();
+            self.skip(&TokenKind::Colon);
+            let else_expr = self.conditional();
+            let start = condition.start;
+            let end = else_expr.end;
+            Expr {
+                kind: ExprKind::Conditional(
+                    Box::new(condition),
+                    Box::new(then_expr),
+                    Box::new(else_expr),
+                ),
+                start,
+                end,
+                source: self.source_slice(start, end),
+                r#type: Type::Int,
+            }
+        } else {
+            condition
         }
     }
 
