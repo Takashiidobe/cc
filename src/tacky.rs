@@ -306,10 +306,7 @@ impl TackyGen {
             ExprKind::Constant(Const::Long(n)) => *n,
             ExprKind::Neg(inner) => -Self::eval_const_expr(inner),
             ExprKind::BitNot(inner) => !Self::eval_const_expr(inner),
-            ExprKind::Not(inner) => {
-                let value = Self::eval_const_expr(inner);
-                if value == 0 { 1 } else { 0 }
-            }
+            ExprKind::Not(inner) => !Self::eval_const_expr(inner),
             ExprKind::Add(lhs, rhs) => Self::eval_const_expr(lhs) + Self::eval_const_expr(rhs),
             ExprKind::Sub(lhs, rhs) => Self::eval_const_expr(lhs) - Self::eval_const_expr(rhs),
             ExprKind::Mul(lhs, rhs) => Self::eval_const_expr(lhs) * Self::eval_const_expr(rhs),
@@ -365,11 +362,7 @@ impl TackyGen {
             }
             ExprKind::Or(lhs, rhs) => {
                 let left = Self::eval_const_expr(lhs);
-                if left != 0 || Self::eval_const_expr(rhs) != 0 {
-                    1
-                } else {
-                    0
-                }
+                (left != 0 || Self::eval_const_expr(rhs) != 0) as i64
             }
             ExprKind::Conditional(cond, then_expr, else_expr) => {
                 if Self::eval_const_expr(cond) != 0 {
@@ -479,7 +472,7 @@ impl TackyGen {
                 instructions.push(Instruction::Return(converted));
             }
             StmtKind::Expr(expr) => {
-                let _ = self.gen_expr(expr, instructions);
+                self.gen_expr(expr, instructions);
             }
             StmtKind::Compound(stmts) => {
                 for stmt in stmts {
