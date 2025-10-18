@@ -1,4 +1,4 @@
-use std::collections::{BTreeSet, BTreeMap};
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Result, Write};
 
 use crate::parse::{Const, Type};
@@ -458,10 +458,10 @@ impl<W: Write> Codegen<W> {
             writeln!(self.buf, "  add ${}, %rsp", stack_bytes)?;
         }
 
-        if let Some(ty) = self.value_type_optional(dst) {
-            if ty != Type::Void {
-                self.store_reg_into_value(Reg::AX, dst)?;
-            }
+        if let Some(ty) = self.value_type_optional(dst)
+            && ty != Type::Void
+        {
+            self.store_reg_into_value(Reg::AX, dst)?;
         }
         Ok(())
     }

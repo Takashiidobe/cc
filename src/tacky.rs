@@ -289,7 +289,7 @@ impl TackyGen {
             return None;
         }
 
-        let init_value = init.map(|expr| self.eval_const_expr(&expr)).unwrap_or(0);
+        let init_value = init.map(|expr| Self::eval_const_expr(&expr)).unwrap_or(0);
         let global = storage_class != Some(StorageClass::Static);
 
         Some(StaticVariable {
@@ -300,114 +300,85 @@ impl TackyGen {
         })
     }
 
-    fn eval_const_expr(&self, expr: &Expr) -> i64 {
+    fn eval_const_expr(expr: &Expr) -> i64 {
         match &expr.kind {
             ExprKind::Constant(Const::Int(n)) => *n,
             ExprKind::Constant(Const::Long(n)) => *n,
-            ExprKind::Neg(inner) => -self.eval_const_expr(inner),
-            ExprKind::BitNot(inner) => !self.eval_const_expr(inner),
+            ExprKind::Neg(inner) => -Self::eval_const_expr(inner),
+            ExprKind::BitNot(inner) => !Self::eval_const_expr(inner),
             ExprKind::Not(inner) => {
-                let value = self.eval_const_expr(inner);
+                let value = Self::eval_const_expr(inner);
                 if value == 0 { 1 } else { 0 }
             }
-            ExprKind::Add(lhs, rhs) => self.eval_const_expr(lhs) + self.eval_const_expr(rhs),
-            ExprKind::Sub(lhs, rhs) => self.eval_const_expr(lhs) - self.eval_const_expr(rhs),
-            ExprKind::Mul(lhs, rhs) => self.eval_const_expr(lhs) * self.eval_const_expr(rhs),
+            ExprKind::Add(lhs, rhs) => Self::eval_const_expr(lhs) + Self::eval_const_expr(rhs),
+            ExprKind::Sub(lhs, rhs) => Self::eval_const_expr(lhs) - Self::eval_const_expr(rhs),
+            ExprKind::Mul(lhs, rhs) => Self::eval_const_expr(lhs) * Self::eval_const_expr(rhs),
             ExprKind::Div(lhs, rhs) => {
-                let divisor = self.eval_const_expr(rhs);
+                let divisor = Self::eval_const_expr(rhs);
                 if divisor == 0 {
                     panic!("division by zero in static initializer");
                 }
-                self.eval_const_expr(lhs) / divisor
+                Self::eval_const_expr(lhs) / divisor
             }
             ExprKind::Rem(lhs, rhs) => {
-                let divisor = self.eval_const_expr(rhs);
+                let divisor = Self::eval_const_expr(rhs);
                 if divisor == 0 {
                     panic!("division by zero in static initializer");
                 }
-                self.eval_const_expr(lhs) % divisor
+                Self::eval_const_expr(lhs) % divisor
             }
             ExprKind::Equal(lhs, rhs) => {
-                if self.eval_const_expr(lhs) == self.eval_const_expr(rhs) {
-                    1
-                } else {
-                    0
-                }
+                (Self::eval_const_expr(lhs) == Self::eval_const_expr(rhs)) as i64
             }
             ExprKind::NotEqual(lhs, rhs) => {
-                if self.eval_const_expr(lhs) != self.eval_const_expr(rhs) {
-                    1
-                } else {
-                    0
-                }
+                (Self::eval_const_expr(lhs) != Self::eval_const_expr(rhs)) as i64
             }
             ExprKind::LessThan(lhs, rhs) => {
-                if self.eval_const_expr(lhs) < self.eval_const_expr(rhs) {
-                    1
-                } else {
-                    0
-                }
+                (Self::eval_const_expr(lhs) < Self::eval_const_expr(rhs)) as i64
             }
             ExprKind::LessThanEqual(lhs, rhs) => {
-                if self.eval_const_expr(lhs) <= self.eval_const_expr(rhs) {
-                    1
-                } else {
-                    0
-                }
+                (Self::eval_const_expr(lhs) <= Self::eval_const_expr(rhs)) as i64
             }
             ExprKind::GreaterThan(lhs, rhs) => {
-                if self.eval_const_expr(lhs) > self.eval_const_expr(rhs) {
-                    1
-                } else {
-                    0
-                }
+                (Self::eval_const_expr(lhs) > Self::eval_const_expr(rhs)) as i64
             }
             ExprKind::GreaterThanEqual(lhs, rhs) => {
-                if self.eval_const_expr(lhs) >= self.eval_const_expr(rhs) {
-                    1
-                } else {
-                    0
-                }
+                (Self::eval_const_expr(lhs) >= Self::eval_const_expr(rhs)) as i64
             }
-            ExprKind::BitAnd(lhs, rhs) => self.eval_const_expr(lhs) & self.eval_const_expr(rhs),
-            ExprKind::BitOr(lhs, rhs) => self.eval_const_expr(lhs) | self.eval_const_expr(rhs),
-            ExprKind::Xor(lhs, rhs) => self.eval_const_expr(lhs) ^ self.eval_const_expr(rhs),
+            ExprKind::BitAnd(lhs, rhs) => Self::eval_const_expr(lhs) & Self::eval_const_expr(rhs),
+            ExprKind::BitOr(lhs, rhs) => Self::eval_const_expr(lhs) | Self::eval_const_expr(rhs),
+            ExprKind::Xor(lhs, rhs) => Self::eval_const_expr(lhs) ^ Self::eval_const_expr(rhs),
             ExprKind::LeftShift(lhs, rhs) => {
-                let shift = self.eval_const_expr(rhs) as u32;
-                self.eval_const_expr(lhs) << shift
+                let shift = Self::eval_const_expr(rhs) as u32;
+                Self::eval_const_expr(lhs) << shift
             }
             ExprKind::RightShift(lhs, rhs) => {
-                let shift = self.eval_const_expr(rhs) as u32;
-                self.eval_const_expr(lhs) >> shift
+                let shift = Self::eval_const_expr(rhs) as u32;
+                Self::eval_const_expr(lhs) >> shift
             }
             ExprKind::And(lhs, rhs) => {
-                let left = self.eval_const_expr(lhs);
+                let left = Self::eval_const_expr(lhs);
                 if left == 0 {
-                    0
-                } else if self.eval_const_expr(rhs) != 0 {
-                    1
-                } else {
-                    0
+                    return 0;
                 }
+                (Self::eval_const_expr(rhs) != 0) as i64
             }
             ExprKind::Or(lhs, rhs) => {
-                let left = self.eval_const_expr(lhs);
-                if left != 0 {
-                    1
-                } else if self.eval_const_expr(rhs) != 0 {
+                let left = Self::eval_const_expr(lhs);
+                if left != 0 || Self::eval_const_expr(rhs) != 0 {
                     1
                 } else {
                     0
                 }
             }
             ExprKind::Conditional(cond, then_expr, else_expr) => {
-                if self.eval_const_expr(cond) != 0 {
-                    self.eval_const_expr(then_expr)
+                if Self::eval_const_expr(cond) != 0 {
+                    Self::eval_const_expr(then_expr)
                 } else {
-                    self.eval_const_expr(else_expr)
+                    Self::eval_const_expr(else_expr)
                 }
             }
-            ExprKind::Cast(_, inner) => self.eval_const_expr(inner),
+            ExprKind::Cast(_, inner) => Self::eval_const_expr(inner),
             _ => panic!("non-constant expression in static initializer"),
         }
     }
