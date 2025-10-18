@@ -69,7 +69,15 @@ impl<W: Write> Codegen<W> {
         } else {
             match var.ty {
                 Type::Int => writeln!(self.buf, "  .long {}", var.init as i32)?,
+                Type::UInt => {
+                    let value = (var.init as u64) & 0xffff_ffff;
+                    writeln!(self.buf, "  .long {}", value)?
+                }
                 Type::Long => writeln!(self.buf, "  .quad {}", var.init)?,
+                Type::ULong => {
+                    let value = var.init as u64;
+                    writeln!(self.buf, "  .quad {}", value)?
+                }
                 Type::Void => panic!("static variable with void type"),
             }
         }
@@ -93,8 +101,8 @@ impl<W: Write> Codegen<W> {
             self.emit_instruction(instr)?;
         }
         match function.return_type {
-            Type::Int => writeln!(self.buf, "  movl $0, %eax")?,
-            Type::Long => writeln!(self.buf, "  movq $0, %rax")?,
+            Type::Int | Type::UInt => writeln!(self.buf, "  movl $0, %eax")?,
+            Type::Long | Type::ULong => writeln!(self.buf, "  movq $0, %rax")?,
             Type::Void => {}
         }
         let result = self.emit_epilogue();
@@ -132,7 +140,9 @@ impl<W: Write> Codegen<W> {
                     }
                     Self::collect_value(&mut vars, dst);
                 }
-                Instruction::SignExtend { src, dst } | Instruction::Truncate { src, dst } => {
+                Instruction::SignExtend { src, dst }
+                | Instruction::ZeroExtend { src, dst }
+                | Instruction::Truncate { src, dst } => {
                     Self::collect_value(&mut vars, src);
                     Self::collect_value(&mut vars, dst);
                 }
@@ -218,6 +228,7 @@ impl<W: Write> Codegen<W> {
                 dst,
             } => self.emit_binary(*op, src1, src2, dst),
             Instruction::SignExtend { src, dst } => self.emit_sign_extend(src, dst),
+            Instruction::ZeroExtend { src, dst } => self.emit_zero_extend(src, dst),
             Instruction::Truncate { src, dst } => self.emit_truncate(src, dst),
             Instruction::Jump(label) => writeln!(self.buf, "  jmp {}", label),
             Instruction::JumpIfZero { condition, target } => {
@@ -287,7 +298,7 @@ impl<W: Write> Codegen<W> {
     fn emit_binary(&mut self, op: BinaryOp, src1: &Value, src2: &Value, dst: &Value) -> Result<()> {
         match op {
             BinaryOp::Divide | BinaryOp::Remainder => {
-                let ty = self.value_type(src1);
+                let ty = self.value_type(dst);
                 self.load_value_into_reg(src1, Reg::AX)?;
                 self.load_value_into_reg(src2, Reg::R10)?;
                 match ty {
@@ -305,6 +316,32 @@ impl<W: Write> Codegen<W> {
                             self.buf,
                             "  idiv {}",
                             Codegen::<W>::reg_name_for_type(Reg::R10, &Type::Long)
+                        )?;
+                    }
+                    Type::UInt => {
+                        writeln!(
+                            self.buf,
+                            "  xor {}, {}",
+                            Self::reg_name32(Reg::DX),
+                            Self::reg_name32(Reg::DX)
+                        )?;
+                        writeln!(
+                            self.buf,
+                            "  div {}",
+                            Codegen::<W>::reg_name_for_type(Reg::R10, &Type::UInt)
+                        )?;
+                    }
+                    Type::ULong => {
+                        writeln!(
+                            self.buf,
+                            "  xor {}, {}",
+                            Self::reg_name(Reg::DX),
+                            Self::reg_name(Reg::DX)
+                        )?;
+                        writeln!(
+                            self.buf,
+                            "  div {}",
+                            Codegen::<W>::reg_name_for_type(Reg::R10, &Type::ULong)
                         )?;
                     }
                     Type::Void => panic!("division on void type"),
@@ -353,7 +390,13 @@ impl<W: Write> Codegen<W> {
 
                 let op_str = match op {
                     BinaryOp::LeftShift => "shl",
-                    BinaryOp::RightShift => "sar",
+                    BinaryOp::RightShift => {
+                        if Self::is_unsigned_type(&ty) {
+                            "shr"
+                        } else {
+                            "sar"
+                        }
+                    }
                     _ => unreachable!(),
                 };
 
@@ -383,13 +426,38 @@ impl<W: Write> Codegen<W> {
                     Codegen::<W>::reg_name_for_type(Reg::AX, &ty)
                 )?;
 
+                let is_unsigned = Self::is_unsigned_type(&ty);
                 let set_instr = match op {
                     BinaryOp::Equal => "sete",
                     BinaryOp::NotEqual => "setne",
-                    BinaryOp::LessThan => "setl",
-                    BinaryOp::LessOrEqual => "setle",
-                    BinaryOp::GreaterThan => "setg",
-                    BinaryOp::GreaterOrEqual => "setge",
+                    BinaryOp::LessThan => {
+                        if is_unsigned {
+                            "setb"
+                        } else {
+                            "setl"
+                        }
+                    }
+                    BinaryOp::LessOrEqual => {
+                        if is_unsigned {
+                            "setbe"
+                        } else {
+                            "setle"
+                        }
+                    }
+                    BinaryOp::GreaterThan => {
+                        if is_unsigned {
+                            "seta"
+                        } else {
+                            "setg"
+                        }
+                    }
+                    BinaryOp::GreaterOrEqual => {
+                        if is_unsigned {
+                            "setae"
+                        } else {
+                            "setge"
+                        }
+                    }
                     _ => unreachable!(),
                 };
 
@@ -410,7 +478,7 @@ impl<W: Write> Codegen<W> {
         let src_ty = self.value_type(src);
         let dst_ty = self.value_type(dst);
         match (src_ty, dst_ty) {
-            (Type::Int, Type::Long) => {
+            (Type::Int, Type::Long) | (Type::Int, Type::ULong) => {
                 self.load_value_into_reg(src, Reg::R11)?;
                 writeln!(
                     self.buf,
@@ -422,6 +490,11 @@ impl<W: Write> Codegen<W> {
             }
             _ => panic!("unsupported sign extension"),
         }
+    }
+
+    fn emit_zero_extend(&mut self, src: &Value, dst: &Value) -> Result<()> {
+        self.load_value_into_reg(src, Reg::R11)?;
+        self.store_reg_into_value(Reg::R11, dst)
     }
 
     fn emit_truncate(&mut self, src: &Value, dst: &Value) -> Result<()> {
@@ -496,6 +569,17 @@ impl<W: Write> Codegen<W> {
             Value::Constant(Const::Long(n)) => {
                 writeln!(self.buf, "  movq ${}, {}", n, Codegen::<W>::reg_name(reg))
             }
+            Value::Constant(Const::UInt(n)) => {
+                writeln!(
+                    self.buf,
+                    "  movl ${}, {}",
+                    n,
+                    Codegen::<W>::reg_name_for_type(reg, &Type::UInt)
+                )
+            }
+            Value::Constant(Const::ULong(n)) => {
+                writeln!(self.buf, "  movq ${}, {}", n, Codegen::<W>::reg_name(reg))
+            }
             Value::Var(name) => {
                 let operand = self.stack_operand(name);
                 writeln!(
@@ -554,34 +638,37 @@ impl<W: Write> Codegen<W> {
 
     fn type_size(&self, ty: &Type) -> i64 {
         match ty {
-            Type::Int => 4,
-            Type::Long => 8,
+            Type::Int | Type::UInt => 4,
+            Type::Long | Type::ULong => 8,
             Type::Void => 0,
         }
     }
 
     fn type_align(&self, ty: &Type) -> i64 {
         match ty {
-            Type::Long => 8,
-            Type::Int => 4,
+            Type::Long | Type::ULong => 8,
+            Type::Int | Type::UInt => 4,
             Type::Void => 1,
         }
     }
 
     fn mov_instr(&self, ty: &Type) -> &'static str {
         match ty {
-            Type::Int => "movl",
-            Type::Long => "movq",
+            Type::Int | Type::UInt => "movl",
+            Type::Long | Type::ULong => "movq",
             Type::Void => "movq",
         }
     }
 
     fn reg_name_for_type(reg: Reg, ty: &Type) -> &'static str {
         match ty {
-            Type::Int => Self::reg_name32(reg),
-            Type::Long => Self::reg_name(reg),
-            Type::Void => Self::reg_name(reg),
+            Type::Int | Type::UInt => Self::reg_name32(reg),
+            Type::Long | Type::ULong | Type::Void => Self::reg_name(reg),
         }
+    }
+
+    fn is_unsigned_type(ty: &Type) -> bool {
+        matches!(ty, Type::UInt | Type::ULong)
     }
 
     fn value_type(&self, value: &Value) -> Type {
@@ -593,6 +680,8 @@ impl<W: Write> Codegen<W> {
         match value {
             Value::Constant(Const::Int(_)) => Some(Type::Int),
             Value::Constant(Const::Long(_)) => Some(Type::Long),
+            Value::Constant(Const::UInt(_)) => Some(Type::UInt),
+            Value::Constant(Const::ULong(_)) => Some(Type::ULong),
             Value::Var(name) => self.value_types.get(name).cloned(),
             Value::Global(name) => self.global_types.get(name).cloned(),
         }

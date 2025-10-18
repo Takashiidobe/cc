@@ -74,6 +74,10 @@ pub enum Instruction {
         src: Value,
         dst: Value,
     },
+    ZeroExtend {
+        src: Value,
+        dst: Value,
+    },
     Truncate {
         src: Value,
         dst: Value,
@@ -304,6 +308,8 @@ impl TackyGen {
         match &expr.kind {
             ExprKind::Constant(Const::Int(n)) => *n,
             ExprKind::Constant(Const::Long(n)) => *n,
+            ExprKind::Constant(Const::UInt(n)) => (*n as u32) as i64,
+            ExprKind::Constant(Const::ULong(n)) => *n as i64,
             ExprKind::Neg(inner) => -Self::eval_const_expr(inner),
             ExprKind::BitNot(inner) => !Self::eval_const_expr(inner),
             ExprKind::Not(inner) => !Self::eval_const_expr(inner),
@@ -396,44 +402,59 @@ impl TackyGen {
             return value;
         }
 
-        match (value, from_type, to_type) {
-            (Value::Constant(Const::Int(n)), Type::Int, Type::Long) => {
-                Value::Constant(Const::Long(n))
-            }
-            (Value::Constant(Const::Long(n)), Type::Long, Type::Int) => {
-                Value::Constant(Const::Int(n))
-            }
-            (val, Type::Int, Type::Long) => {
-                let tmp = self.fresh_tmp();
-                self.record_temp(&tmp, &Type::Long);
-                let dst = Value::Var(tmp);
-                instructions.push(Instruction::SignExtend {
-                    src: val,
-                    dst: dst.clone(),
-                });
-                dst
-            }
-            (val, Type::Long, Type::Int) => {
-                let tmp = self.fresh_tmp();
-                self.record_temp(&tmp, &Type::Int);
-                let dst = Value::Var(tmp);
-                instructions.push(Instruction::Truncate {
-                    src: val,
-                    dst: dst.clone(),
-                });
-                dst
-            }
-            (val, from, to) => {
-                let _ = val;
-                panic!("unsupported conversion from {:?} to {:?}", from, to)
-            }
+        if !Self::is_integer_type(&from_type) || !Self::is_integer_type(&to_type) {
+            panic!(
+                "unsupported conversion from {:?} to {:?}",
+                from_type, to_type
+            );
         }
+
+        if let Value::Constant(c) = value {
+            let converted = Self::convert_constant(c, &from_type, &to_type);
+            return Value::Constant(converted);
+        }
+
+        let from_bits = Self::bit_width(&from_type);
+        let to_bits = Self::bit_width(&to_type);
+
+        let tmp = self.fresh_tmp();
+        self.record_temp(&tmp, &to_type);
+        let dst = Value::Var(tmp);
+
+        if from_bits == to_bits {
+            instructions.push(Instruction::Copy {
+                src: value,
+                dst: dst.clone(),
+            });
+        } else if to_bits > from_bits {
+            let instr = if Self::is_unsigned(&from_type) {
+                Instruction::ZeroExtend {
+                    src: value,
+                    dst: dst.clone(),
+                }
+            } else {
+                Instruction::SignExtend {
+                    src: value,
+                    dst: dst.clone(),
+                }
+            };
+            instructions.push(instr);
+        } else {
+            instructions.push(Instruction::Truncate {
+                src: value,
+                dst: dst.clone(),
+            });
+        }
+
+        dst
     }
 
     fn type_of_value(&self, value: &Value) -> Type {
         match value {
             Value::Constant(Const::Int(_)) => Type::Int,
             Value::Constant(Const::Long(_)) => Type::Long,
+            Value::Constant(Const::UInt(_)) => Type::UInt,
+            Value::Constant(Const::ULong(_)) => Type::ULong,
             Value::Var(name) => self
                 .value_types
                 .get(name)
@@ -457,6 +478,100 @@ impl TackyGen {
 
     fn is_local(&self, name: &str) -> bool {
         self.locals.contains_key(name)
+    }
+
+    fn bit_width(ty: &Type) -> u32 {
+        match ty {
+            Type::Int | Type::UInt => 32,
+            Type::Long | Type::ULong => 64,
+            Type::Void => panic!("void type has no bit width"),
+        }
+    }
+
+    fn is_unsigned(ty: &Type) -> bool {
+        matches!(ty, Type::UInt | Type::ULong)
+    }
+
+    fn is_integer_type(ty: &Type) -> bool {
+        matches!(ty, Type::Int | Type::UInt | Type::Long | Type::ULong)
+    }
+
+    fn type_rank(ty: &Type) -> usize {
+        match ty {
+            Type::Int => 0,
+            Type::UInt => 1,
+            Type::Long => 2,
+            Type::ULong => 3,
+            Type::Void => panic!("void type has no rank"),
+        }
+    }
+
+    fn common_numeric_type(lhs: &Type, rhs: &Type) -> Type {
+        if !Self::is_integer_type(lhs) || !Self::is_integer_type(rhs) {
+            panic!("unsupported operand types {:?} and {:?}", lhs, rhs);
+        }
+
+        if Self::type_rank(lhs) >= Self::type_rank(rhs) {
+            lhs.clone()
+        } else {
+            rhs.clone()
+        }
+    }
+
+    fn mask(bits: u32) -> u128 {
+        if bits == 0 {
+            0
+        } else if bits >= 128 {
+            u128::MAX
+        } else {
+            (1u128 << bits) - 1
+        }
+    }
+
+    fn convert_constant(constant: Const, from_type: &Type, to_type: &Type) -> Const {
+        if from_type == to_type {
+            return constant;
+        }
+
+        let from_bits = Self::bit_width(from_type);
+        let to_bits = Self::bit_width(to_type);
+        let from_unsigned = Self::is_unsigned(from_type);
+
+        let mut raw = match constant {
+            Const::Int(n) => (n as i32 as u32) as u128,
+            Const::UInt(n) => (n as u32) as u128,
+            Const::Long(n) => (n as u64) as u128,
+            Const::ULong(n) => n as u128,
+        };
+
+        raw &= Self::mask(from_bits);
+
+        if to_bits > from_bits && !from_unsigned {
+            let sign_bit = 1u128 << (from_bits - 1);
+            if raw & sign_bit != 0 {
+                let extension_mask = (!0u128) << from_bits;
+                raw |= extension_mask;
+            }
+        }
+
+        raw &= Self::mask(to_bits);
+
+        match to_type {
+            Type::Int => {
+                let value = (raw as u32) as i32 as i64;
+                Const::Int(value)
+            }
+            Type::UInt => {
+                let value = (raw as u32) as u64;
+                Const::UInt(value)
+            }
+            Type::Long => {
+                let value = (raw as u64) as i64;
+                Const::Long(value)
+            }
+            Type::ULong => Const::ULong(raw as u64),
+            Type::Void => panic!("cannot convert constant to void"),
+        }
     }
 
     fn gen_stmt(&mut self, stmt: &Stmt, instructions: &mut Vec<Instruction>) {
@@ -884,24 +999,24 @@ impl TackyGen {
         let lhs_value = self.gen_expr(lhs, instructions);
         let rhs_value = self.gen_expr(rhs, instructions);
 
-        let (lhs_type, rhs_type) = match op {
+        let (lhs_target_type, rhs_target_type) = match op {
             BinaryOp::LeftShift | BinaryOp::RightShift => (lhs.r#type.clone(), Type::Int),
-            _ => match (lhs.r#type.clone(), rhs.r#type.clone()) {
-                (Type::Long, _) | (_, Type::Long) => (Type::Long, Type::Long),
-                _ => (Type::Int, Type::Int),
-            },
+            _ => {
+                let common = Self::common_numeric_type(&lhs.r#type, &rhs.r#type);
+                (common.clone(), common)
+            }
         };
 
         let src1 = self.convert_value(
             lhs_value,
             lhs.r#type.clone(),
-            lhs_type.clone(),
+            lhs_target_type.clone(),
             instructions,
         );
         let src2 = self.convert_value(
             rhs_value,
             rhs.r#type.clone(),
-            rhs_type.clone(),
+            rhs_target_type.clone(),
             instructions,
         );
 
@@ -1034,8 +1149,11 @@ impl TackyGen {
         self.record_temp(&updated_tmp_name, &target_type);
         let updated_tmp = Value::Var(updated_tmp_name.clone());
         let one = match target_type {
+            Type::Int => Value::Constant(Const::Int(1)),
+            Type::UInt => Value::Constant(Const::UInt(1)),
             Type::Long => Value::Constant(Const::Long(1)),
-            _ => Value::Constant(Const::Int(1)),
+            Type::ULong => Value::Constant(Const::ULong(1)),
+            Type::Void => panic!("cannot increment void"),
         };
         instructions.push(Instruction::Binary {
             op,

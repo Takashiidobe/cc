@@ -318,6 +318,8 @@ impl SemanticAnalyzer {
                 let ty = match &c {
                     Const::Int(_) => Type::Int,
                     Const::Long(_) => Type::Long,
+                    Const::UInt(_) => Type::UInt,
+                    Const::ULong(_) => Type::ULong,
                 };
                 Expr {
                     kind: ExprKind::Constant(c),
@@ -687,30 +689,52 @@ impl SemanticAnalyzer {
     }
 
     fn numeric_result_type(&self, lhs: &Type, rhs: &Type) -> Type {
-        match (lhs, rhs) {
-            (Type::Long, _) | (_, Type::Long) => Type::Long,
-            (Type::Int, Type::Int) => Type::Int,
-            _ => panic!(
+        if !Self::is_integer_type(lhs) || !Self::is_integer_type(rhs) {
+            panic!(
                 "unsupported operand types {:?} and {:?} in numeric expression",
                 lhs, rhs
-            ),
+            );
+        }
+
+        if Self::type_rank(lhs) >= Self::type_rank(rhs) {
+            lhs.clone()
+        } else {
+            rhs.clone()
         }
     }
 
     fn ensure_integer_type(&self, ty: &Type, context: &str) {
-        if !matches!(ty, Type::Int | Type::Long) {
+        if !Self::is_integer_type(ty) {
             panic!("{context} requires integer type, found {:?}", ty);
         }
     }
 
     fn ensure_assignable(&self, target: &Type, value: &Type, context: &str) {
-        match (target, value) {
-            (Type::Int, Type::Int | Type::Long) => {}
-            (Type::Long, Type::Int | Type::Long) => {}
-            _ => panic!(
-                "{context} requires compatible integer types ({:?} <- {:?})",
-                target, value
-            ),
+        if target == value {
+            return;
+        }
+
+        if Self::is_integer_type(target) && Self::is_integer_type(value) {
+            return;
+        }
+
+        panic!(
+            "{context} requires compatible integer types ({:?} <- {:?})",
+            target, value
+        );
+    }
+
+    fn is_integer_type(ty: &Type) -> bool {
+        matches!(ty, Type::Int | Type::UInt | Type::Long | Type::ULong)
+    }
+
+    fn type_rank(ty: &Type) -> usize {
+        match ty {
+            Type::Int => 0,
+            Type::UInt => 1,
+            Type::Long => 2,
+            Type::ULong => 3,
+            Type::Void => panic!("void type has no integer rank"),
         }
     }
 

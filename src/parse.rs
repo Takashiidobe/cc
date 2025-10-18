@@ -135,6 +135,8 @@ pub enum ForInit {
 pub enum Type {
     Int,
     Long,
+    UInt,
+    ULong,
     Void,
 }
 
@@ -142,6 +144,8 @@ pub enum Type {
 pub enum Const {
     Int(i64),
     Long(i64),
+    UInt(u64),
+    ULong(u64),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -164,6 +168,88 @@ pub struct Parser {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Program(pub Vec<Decl>);
 
+#[derive(Debug, Clone, Default)]
+struct TypeSpecifierState {
+    saw_void: bool,
+    saw_long: bool,
+    saw_int: bool,
+    signedness: Option<bool>, // Some(true) for signed, Some(false) for unsigned
+}
+
+impl TypeSpecifierState {
+    fn add(&mut self, kind: &TokenKind) {
+        match kind {
+            TokenKind::Void => {
+                if self.saw_void {
+                    panic!("duplicate 'void' specifier in declaration");
+                }
+                if self.saw_long || self.saw_int || self.signedness.is_some() {
+                    panic!("'void' cannot be combined with other type specifiers");
+                }
+                self.saw_void = true;
+            }
+            TokenKind::Long => {
+                if self.saw_void {
+                    panic!("'long' cannot be combined with 'void'");
+                }
+                if self.saw_long {
+                    panic!("duplicate 'long' specifier in declaration");
+                }
+                self.saw_long = true;
+            }
+            TokenKind::Int => {
+                if self.saw_void {
+                    panic!("'int' cannot be combined with 'void'");
+                }
+                if self.saw_int {
+                    panic!("duplicate 'int' specifier in declaration");
+                }
+                self.saw_int = true;
+            }
+            TokenKind::Signed => {
+                if self.signedness == Some(false) {
+                    panic!("conflicting 'signed' and 'unsigned' specifiers");
+                }
+                if self.signedness == Some(true) {
+                    panic!("duplicate 'signed' specifier in declaration");
+                }
+                self.signedness = Some(true);
+            }
+            TokenKind::Unsigned => {
+                if self.signedness == Some(true) {
+                    panic!("conflicting 'signed' and 'unsigned' specifiers");
+                }
+                if self.signedness == Some(false) {
+                    panic!("duplicate 'unsigned' specifier in declaration");
+                }
+                self.signedness = Some(false);
+            }
+            _ => panic!("unsupported type specifier"),
+        }
+    }
+
+    fn has_type_specifier(&self) -> bool {
+        self.saw_void || self.saw_long || self.saw_int || self.signedness.is_some()
+    }
+
+    fn resolve(&self) -> Type {
+        if !self.has_type_specifier() {
+            panic!("declaration missing type specifier");
+        }
+
+        if self.saw_void {
+            return Type::Void;
+        }
+
+        let is_unsigned = matches!(self.signedness, Some(false));
+        if self.saw_long {
+            if is_unsigned { Type::ULong } else { Type::Long }
+        } else {
+            if is_unsigned { Type::UInt } else { Type::Int }
+        }
+    }
+}
+
 impl Parser {
     pub fn new(source: Vec<char>, tokens: Vec<Token>) -> Self {
         Self {
@@ -175,43 +261,27 @@ impl Parser {
     }
 
     fn parse_specifiers(&mut self) -> (Type, Option<StorageClass>) {
-        let mut ty: Option<Type> = None;
+        self.parse_specifiers_internal(true)
+    }
+
+    fn parse_type_specifiers(&mut self) -> Type {
+        let (ty, storage) = self.parse_specifiers_internal(false);
+        debug_assert!(storage.is_none());
+        ty
+    }
+
+    fn parse_specifiers_internal(&mut self, allow_storage: bool) -> (Type, Option<StorageClass>) {
         let mut storage: Option<StorageClass> = None;
+        let mut state = TypeSpecifierState::default();
         let mut consumed_any = false;
 
-        loop {
-            let kind = if self.pos < self.tokens.len() {
-                self.peek().kind.clone()
-            } else {
-                break;
-            };
-
+        while self.pos < self.tokens.len() {
+            let kind = self.peek().kind.clone();
             match kind {
-                TokenKind::Int => {
-                    if ty.is_some() {
-                        panic!("duplicate type specifier in declaration");
-                    }
-                    self.advance();
-                    ty = Some(Type::Int);
-                    consumed_any = true;
-                }
-                TokenKind::Long => {
-                    if ty.is_some() {
-                        panic!("duplicate type specifier in declaration");
-                    }
-                    self.advance();
-                    ty = Some(Type::Long);
-                    consumed_any = true;
-                }
-                TokenKind::Void => {
-                    if ty.is_some() {
-                        panic!("duplicate type specifier in declaration");
-                    }
-                    self.advance();
-                    ty = Some(Type::Void);
-                    consumed_any = true;
-                }
                 TokenKind::Static => {
+                    if !allow_storage {
+                        panic!("storage class specifiers are not allowed here");
+                    }
                     if storage.is_some() {
                         panic!("multiple storage class specifiers in declaration");
                     }
@@ -220,11 +290,23 @@ impl Parser {
                     consumed_any = true;
                 }
                 TokenKind::Extern => {
+                    if !allow_storage {
+                        panic!("storage class specifiers are not allowed here");
+                    }
                     if storage.is_some() {
                         panic!("multiple storage class specifiers in declaration");
                     }
                     self.advance();
                     storage = Some(StorageClass::Extern);
+                    consumed_any = true;
+                }
+                TokenKind::Int
+                | TokenKind::Long
+                | TokenKind::Void
+                | TokenKind::Signed
+                | TokenKind::Unsigned => {
+                    self.advance();
+                    state.add(&kind);
                     consumed_any = true;
                 }
                 _ => break,
@@ -235,7 +317,7 @@ impl Parser {
             panic!("expected declaration specifiers");
         }
 
-        let ty = ty.unwrap_or_else(|| panic!("declaration missing type specifier"));
+        let ty = state.resolve();
         (ty, storage)
     }
 
@@ -255,7 +337,13 @@ impl Parser {
         }
         matches!(
             self.tokens[self.pos].kind,
-            TokenKind::Int | TokenKind::Long | TokenKind::Static | TokenKind::Extern
+            TokenKind::Int
+                | TokenKind::Long
+                | TokenKind::Unsigned
+                | TokenKind::Signed
+                | TokenKind::Void
+                | TokenKind::Static
+                | TokenKind::Extern
         )
     }
 
@@ -329,7 +417,10 @@ impl Parser {
         return_type: Type,
         storage_class: Option<StorageClass>,
     ) -> Decl {
-        if return_type != Type::Int && return_type != Type::Void && return_type != Type::Long {
+        if !matches!(
+            return_type,
+            Type::Int | Type::Void | Type::Long | Type::UInt | Type::ULong
+        ) {
             panic!("Unsupported return type in function declaration");
         }
         self.skip(&TokenKind::LParen);
@@ -411,32 +502,20 @@ impl Parser {
         }
 
         if self.peek().kind == TokenKind::Void {
-            self.advance();
-            if self.peek().kind != TokenKind::RParen {
-                panic!("'void' parameter must be the only parameter");
+            if self.pos + 1 < self.tokens.len()
+                && self.tokens[self.pos + 1].kind == TokenKind::RParen
+            {
+                self.advance();
+                return params;
             }
-            return params;
         }
 
         loop {
-            let ty = match self.peek().kind {
-                TokenKind::Int => {
-                    self.advance();
-                    Type::Int
-                }
-                TokenKind::Long => {
-                    self.advance();
-                    Type::Long
-                }
-                kind => panic!("Expected parameter type, found {kind:?}"),
-            };
-            let name = match self.peek().kind.clone() {
-                TokenKind::Identifier(name) => {
-                    self.advance();
-                    name
-                }
-                kind => panic!("Expected parameter name, found {kind:?}"),
-            };
+            let ty = self.parse_type_specifiers();
+            if matches!(ty, Type::Void) {
+                panic!("'void' parameter must be the only parameter");
+            }
+            let name = self.expect_identifier();
             params.push(ParameterDecl { name, r#type: ty });
 
             if self.peek().kind == TokenKind::Comma {
@@ -1112,17 +1191,10 @@ impl Parser {
         if self.peek().kind == TokenKind::LParen && self.is_cast_expression() {
             let Token { start, .. } = self.peek();
             self.advance(); // consume '('
-            let ty = match self.peek().kind {
-                TokenKind::Int => {
-                    self.advance();
-                    Type::Int
-                }
-                TokenKind::Long => {
-                    self.advance();
-                    Type::Long
-                }
-                kind => panic!("Unsupported cast target: {kind:?}"),
-            };
+            let ty = self.parse_type_specifiers();
+            if matches!(ty, Type::Void) {
+                panic!("Unsupported cast target: void");
+            }
             self.skip(&TokenKind::RParen);
             let expr = self.unary();
             let end = expr.end;
@@ -1299,6 +1371,26 @@ impl Parser {
                     r#type: Type::Long,
                 }
             }
+            TokenKind::UnsignedInteger(n) => {
+                self.advance();
+                Expr {
+                    kind: ExprKind::Constant(Const::UInt(n)),
+                    start,
+                    end,
+                    source,
+                    r#type: Type::UInt,
+                }
+            }
+            TokenKind::UnsignedLongInteger(n) => {
+                self.advance();
+                Expr {
+                    kind: ExprKind::Constant(Const::ULong(n)),
+                    start,
+                    end,
+                    source,
+                    r#type: Type::ULong,
+                }
+            }
             TokenKind::Identifier(name) => {
                 self.advance();
                 Expr {
@@ -1323,18 +1415,35 @@ impl Parser {
         if self.pos + 1 >= self.tokens.len() {
             return false;
         }
+
         let mut idx = self.pos + 1;
-        let mut saw_type = false;
+        let mut state = TypeSpecifierState::default();
+        let mut consumed_any = false;
+
         while idx < self.tokens.len() {
-            match self.tokens[idx].kind {
-                TokenKind::Int | TokenKind::Long => {
-                    saw_type = true;
+            let kind = &self.tokens[idx].kind;
+            match kind {
+                TokenKind::Int
+                | TokenKind::Long
+                | TokenKind::Void
+                | TokenKind::Signed
+                | TokenKind::Unsigned => {
+                    state.add(kind);
+                    consumed_any = true;
                     idx += 1;
                 }
-                TokenKind::RParen => return saw_type,
+                TokenKind::RParen => {
+                    if !consumed_any {
+                        return false;
+                    }
+                    // ensure the specifier combination is valid
+                    let _ = state.resolve();
+                    return true;
+                }
                 _ => return false,
             }
         }
+
         false
     }
 
