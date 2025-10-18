@@ -5,10 +5,8 @@ use clap::{Parser, arg, command};
 #[derive(Debug, Parser)]
 #[command(version, about)]
 pub struct Args {
-    #[arg(long, short, group = "flag")]
-    pub codegen: bool,
     #[arg(long, short = 'S', group = "flag")]
-    pub assembly: bool,
+    pub codegen: bool,
     #[arg(long, short, group = "flag")]
     pub parse: bool,
     #[arg(long, short, group = "flag")]
@@ -16,6 +14,9 @@ pub struct Args {
 
     #[arg(value_parser = path_exists)]
     pub input_path: PathBuf,
+
+    #[clap(env, long, short)]
+    pub verbose: bool,
 }
 
 pub fn path_exists(s: &str) -> Result<PathBuf, String> {

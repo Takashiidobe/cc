@@ -1,14 +1,15 @@
-use std::collections::HashSet;
+use std::collections::BTreeMap;
 
 use crate::parse::{
-    DeclKind, Expr, ExprKind, ForInit, FunctionDecl, Program as AstProgram, Stmt, StmtKind,
-    StorageClass, Type, VariableDecl,
+    Const, DeclKind, Expr, ExprKind, ForInit, FunctionDecl, ParameterDecl, Program as AstProgram,
+    Stmt, StmtKind, StorageClass, Type, VariableDecl,
 };
 
 #[derive(Debug, Clone)]
 pub struct Program {
     pub functions: Vec<Function>,
     pub statics: Vec<StaticVariable>,
+    pub global_types: BTreeMap<String, Type>,
 }
 
 #[derive(Debug, Clone)]
@@ -18,18 +19,20 @@ pub struct Function {
     pub params: Vec<String>,
     pub return_type: Type,
     pub instructions: Vec<Instruction>,
+    pub value_types: BTreeMap<String, Type>,
 }
 
 #[derive(Debug, Clone)]
 pub struct StaticVariable {
     pub name: String,
     pub global: bool,
+    pub ty: Type,
     pub init: i64,
 }
 
 #[derive(Debug, Clone)]
 pub enum Value {
-    Constant(i64),
+    Constant(Const),
     Var(String),
     Global(String),
 }
@@ -67,6 +70,14 @@ pub enum Instruction {
         target: String,
     },
     Label(String),
+    SignExtend {
+        src: Value,
+        dst: Value,
+    },
+    Truncate {
+        src: Value,
+        dst: Value,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -101,7 +112,11 @@ pub struct TackyGen {
     label_counter: usize,
     program: AstProgram,
     loop_stack: Vec<LoopContext>,
-    locals: HashSet<String>,
+    locals: BTreeMap<String, Type>,
+    value_types: BTreeMap<String, Type>,
+    global_types: BTreeMap<String, Type>,
+    current_return_type: Option<Type>,
+    function_signatures: BTreeMap<String, (Vec<Type>, Type)>,
 }
 
 struct LoopContext {
@@ -141,12 +156,31 @@ impl TackyGen {
     }
 
     pub fn new(program: AstProgram) -> Self {
+        let mut global_types = BTreeMap::new();
+        let mut function_signatures = BTreeMap::new();
+        for decl in &program.0 {
+            match &decl.kind {
+                DeclKind::Variable(var) => {
+                    global_types.insert(var.name.clone(), var.r#type.clone());
+                }
+                DeclKind::Function(func) => {
+                    let param_types = func.params.iter().map(|p| p.r#type.clone()).collect();
+                    function_signatures
+                        .insert(func.name.clone(), (param_types, func.return_type.clone()));
+                }
+            }
+        }
+
         Self {
             tmp_counter: 0,
             label_counter: 0,
             program,
             loop_stack: Vec::new(),
-            locals: HashSet::new(),
+            locals: BTreeMap::new(),
+            value_types: BTreeMap::new(),
+            global_types,
+            current_return_type: None,
+            function_signatures,
         }
     }
 
@@ -170,7 +204,11 @@ impl TackyGen {
             }
         }
 
-        Program { functions, statics }
+        Program {
+            functions,
+            statics,
+            global_types: self.global_types.clone(),
+        }
     }
 
     fn gen_function_decl(&mut self, decl: FunctionDecl) -> Option<Function> {
@@ -191,7 +229,7 @@ impl TackyGen {
         &mut self,
         name: String,
         global: bool,
-        params: Vec<String>,
+        params: Vec<ParameterDecl>,
         body: Vec<Stmt>,
         return_type: Type,
     ) -> Function {
@@ -200,9 +238,15 @@ impl TackyGen {
             "loop stack not empty at function entry"
         );
 
+        let previous_return = self.current_return_type.replace(return_type.clone());
+
         self.locals.clear();
+        self.value_types.clear();
+
+        let mut param_names = Vec::new();
         for param in &params {
-            self.locals.insert(param.clone());
+            self.register_local(&param.name, &param.r#type);
+            param_names.push(param.name.clone());
         }
 
         let mut instructions = Vec::new();
@@ -215,13 +259,16 @@ impl TackyGen {
             name
         );
         self.locals.clear();
+        let value_types = std::mem::take(&mut self.value_types);
+        self.current_return_type = previous_return;
 
         Function {
             name,
             global,
-            params,
+            params: param_names,
             return_type,
             instructions,
+            value_types,
         }
     }
 
@@ -230,7 +277,7 @@ impl TackyGen {
             name,
             init,
             storage_class,
-            r#type: _,
+            r#type,
             is_definition,
         } = decl;
 
@@ -248,13 +295,15 @@ impl TackyGen {
         Some(StaticVariable {
             name,
             global,
+            ty: r#type,
             init: init_value,
         })
     }
 
     fn eval_const_expr(&self, expr: &Expr) -> i64 {
         match &expr.kind {
-            ExprKind::Integer(n) => *n,
+            ExprKind::Constant(Const::Int(n)) => *n,
+            ExprKind::Constant(Const::Long(n)) => *n,
             ExprKind::Neg(inner) => -self.eval_const_expr(inner),
             ExprKind::BitNot(inner) => !self.eval_const_expr(inner),
             ExprKind::Not(inner) => {
@@ -358,7 +407,79 @@ impl TackyGen {
                     self.eval_const_expr(else_expr)
                 }
             }
+            ExprKind::Cast(_, inner) => self.eval_const_expr(inner),
             _ => panic!("non-constant expression in static initializer"),
+        }
+    }
+
+    fn register_local(&mut self, name: &str, ty: &Type) {
+        self.locals.insert(name.to_string(), ty.clone());
+        self.value_types.insert(name.to_string(), ty.clone());
+    }
+
+    fn record_temp(&mut self, name: &str, ty: &Type) {
+        self.value_types.insert(name.to_string(), ty.clone());
+    }
+
+    fn convert_value(
+        &mut self,
+        value: Value,
+        from_type: Type,
+        to_type: Type,
+        instructions: &mut Vec<Instruction>,
+    ) -> Value {
+        if from_type == to_type {
+            return value;
+        }
+
+        match (value, from_type, to_type) {
+            (Value::Constant(Const::Int(n)), Type::Int, Type::Long) => {
+                Value::Constant(Const::Long(n))
+            }
+            (Value::Constant(Const::Long(n)), Type::Long, Type::Int) => {
+                Value::Constant(Const::Int(n))
+            }
+            (val, Type::Int, Type::Long) => {
+                let tmp = self.fresh_tmp();
+                self.record_temp(&tmp, &Type::Long);
+                let dst = Value::Var(tmp);
+                instructions.push(Instruction::SignExtend {
+                    src: val,
+                    dst: dst.clone(),
+                });
+                dst
+            }
+            (val, Type::Long, Type::Int) => {
+                let tmp = self.fresh_tmp();
+                self.record_temp(&tmp, &Type::Int);
+                let dst = Value::Var(tmp);
+                instructions.push(Instruction::Truncate {
+                    src: val,
+                    dst: dst.clone(),
+                });
+                dst
+            }
+            (val, from, to) => {
+                let _ = val;
+                panic!("unsupported conversion from {:?} to {:?}", from, to)
+            }
+        }
+    }
+
+    fn type_of_value(&self, value: &Value) -> Type {
+        match value {
+            Value::Constant(Const::Int(_)) => Type::Int,
+            Value::Constant(Const::Long(_)) => Type::Long,
+            Value::Var(name) => self
+                .value_types
+                .get(name)
+                .unwrap_or_else(|| panic!("unknown temporary {name}"))
+                .clone(),
+            Value::Global(name) => self
+                .global_types
+                .get(name)
+                .unwrap_or_else(|| panic!("unknown global {name}"))
+                .clone(),
         }
     }
 
@@ -371,14 +492,20 @@ impl TackyGen {
     }
 
     fn is_local(&self, name: &str) -> bool {
-        self.locals.contains(name)
+        self.locals.contains_key(name)
     }
 
     fn gen_stmt(&mut self, stmt: &Stmt, instructions: &mut Vec<Instruction>) {
         match &stmt.kind {
             StmtKind::Return(expr) => {
                 let value = self.gen_expr(expr, instructions);
-                instructions.push(Instruction::Return(value));
+                let target_type = self
+                    .current_return_type
+                    .clone()
+                    .expect("return outside function context");
+                let converted =
+                    self.convert_value(value, expr.r#type.clone(), target_type, instructions);
+                instructions.push(Instruction::Return(converted));
             }
             StmtKind::Expr(expr) => {
                 let _ = self.gen_expr(expr, instructions);
@@ -528,12 +655,18 @@ impl TackyGen {
                         if decl.is_definition {
                             if let Some(init_expr) = &decl.init {
                                 let value = self.gen_expr(init_expr, instructions);
+                                let converted = self.convert_value(
+                                    value,
+                                    init_expr.r#type.clone(),
+                                    decl.r#type.clone(),
+                                    instructions,
+                                );
                                 instructions.push(Instruction::Copy {
-                                    src: value,
+                                    src: converted,
                                     dst: Value::Var(decl.name.clone()),
                                 });
                             }
-                            self.locals.insert(decl.name.clone());
+                            self.register_local(&decl.name, &decl.r#type);
                         }
                     }
                     Some(StorageClass::Extern) => {
@@ -549,58 +682,77 @@ impl TackyGen {
     }
 
     fn gen_expr(&mut self, expr: &Expr, instructions: &mut Vec<Instruction>) -> Value {
+        let result_type = expr.r#type.clone();
         match &expr.kind {
-            ExprKind::Integer(n) => Value::Constant(*n),
+            ExprKind::Constant(c) => Value::Constant(c.clone()),
             ExprKind::Var(name) => self.value_for_variable(name),
-            ExprKind::FunctionCall(name, args) => self.gen_function_call(name, args, instructions),
-            ExprKind::Neg(rhs) => self.gen_unary_expr(UnaryOp::Negate, rhs, instructions),
-            ExprKind::BitNot(rhs) => self.gen_unary_expr(UnaryOp::Complement, rhs, instructions),
-            ExprKind::Not(rhs) => self.gen_unary_expr(UnaryOp::Not, rhs, instructions),
-            ExprKind::Add(lhs, rhs) => self.gen_binary_expr(BinaryOp::Add, lhs, rhs, instructions),
+            ExprKind::FunctionCall(name, args) => {
+                self.gen_function_call(name, args, &result_type, instructions)
+            }
+            ExprKind::Cast(target, inner) => {
+                let value = self.gen_expr(inner, instructions);
+                self.convert_value(value, inner.r#type.clone(), target.clone(), instructions)
+            }
+            ExprKind::Neg(rhs) => {
+                self.gen_unary_expr(UnaryOp::Negate, rhs, &result_type, instructions)
+            }
+            ExprKind::BitNot(rhs) => {
+                self.gen_unary_expr(UnaryOp::Complement, rhs, &result_type, instructions)
+            }
+            ExprKind::Not(rhs) => {
+                self.gen_unary_expr(UnaryOp::Not, rhs, &result_type, instructions)
+            }
+            ExprKind::Add(lhs, rhs) => {
+                self.gen_binary_expr(BinaryOp::Add, lhs, rhs, &result_type, instructions)
+            }
             ExprKind::Sub(lhs, rhs) => {
-                self.gen_binary_expr(BinaryOp::Subtract, lhs, rhs, instructions)
+                self.gen_binary_expr(BinaryOp::Subtract, lhs, rhs, &result_type, instructions)
             }
             ExprKind::Mul(lhs, rhs) => {
-                self.gen_binary_expr(BinaryOp::Multiply, lhs, rhs, instructions)
+                self.gen_binary_expr(BinaryOp::Multiply, lhs, rhs, &result_type, instructions)
             }
             ExprKind::Div(lhs, rhs) => {
-                self.gen_binary_expr(BinaryOp::Divide, lhs, rhs, instructions)
+                self.gen_binary_expr(BinaryOp::Divide, lhs, rhs, &result_type, instructions)
             }
             ExprKind::Rem(lhs, rhs) => {
-                self.gen_binary_expr(BinaryOp::Remainder, lhs, rhs, instructions)
+                self.gen_binary_expr(BinaryOp::Remainder, lhs, rhs, &result_type, instructions)
             }
             ExprKind::LessThan(lhs, rhs) => {
-                self.gen_binary_expr(BinaryOp::LessThan, lhs, rhs, instructions)
+                self.gen_binary_expr(BinaryOp::LessThan, lhs, rhs, &result_type, instructions)
             }
             ExprKind::LessThanEqual(lhs, rhs) => {
-                self.gen_binary_expr(BinaryOp::LessOrEqual, lhs, rhs, instructions)
+                self.gen_binary_expr(BinaryOp::LessOrEqual, lhs, rhs, &result_type, instructions)
             }
             ExprKind::GreaterThan(lhs, rhs) => {
-                self.gen_binary_expr(BinaryOp::GreaterThan, lhs, rhs, instructions)
+                self.gen_binary_expr(BinaryOp::GreaterThan, lhs, rhs, &result_type, instructions)
             }
-            ExprKind::GreaterThanEqual(lhs, rhs) => {
-                self.gen_binary_expr(BinaryOp::GreaterOrEqual, lhs, rhs, instructions)
-            }
+            ExprKind::GreaterThanEqual(lhs, rhs) => self.gen_binary_expr(
+                BinaryOp::GreaterOrEqual,
+                lhs,
+                rhs,
+                &result_type,
+                instructions,
+            ),
             ExprKind::Equal(lhs, rhs) => {
-                self.gen_binary_expr(BinaryOp::Equal, lhs, rhs, instructions)
+                self.gen_binary_expr(BinaryOp::Equal, lhs, rhs, &result_type, instructions)
             }
             ExprKind::NotEqual(lhs, rhs) => {
-                self.gen_binary_expr(BinaryOp::NotEqual, lhs, rhs, instructions)
+                self.gen_binary_expr(BinaryOp::NotEqual, lhs, rhs, &result_type, instructions)
             }
             ExprKind::BitAnd(lhs, rhs) => {
-                self.gen_binary_expr(BinaryOp::BitAnd, lhs, rhs, instructions)
+                self.gen_binary_expr(BinaryOp::BitAnd, lhs, rhs, &result_type, instructions)
             }
             ExprKind::BitOr(lhs, rhs) => {
-                self.gen_binary_expr(BinaryOp::BitOr, lhs, rhs, instructions)
+                self.gen_binary_expr(BinaryOp::BitOr, lhs, rhs, &result_type, instructions)
             }
             ExprKind::Xor(lhs, rhs) => {
-                self.gen_binary_expr(BinaryOp::BitXor, lhs, rhs, instructions)
+                self.gen_binary_expr(BinaryOp::BitXor, lhs, rhs, &result_type, instructions)
             }
             ExprKind::LeftShift(lhs, rhs) => {
-                self.gen_binary_expr(BinaryOp::LeftShift, lhs, rhs, instructions)
+                self.gen_binary_expr(BinaryOp::LeftShift, lhs, rhs, &result_type, instructions)
             }
             ExprKind::RightShift(lhs, rhs) => {
-                self.gen_binary_expr(BinaryOp::RightShift, lhs, rhs, instructions)
+                self.gen_binary_expr(BinaryOp::RightShift, lhs, rhs, &result_type, instructions)
             }
             ExprKind::And(lhs, rhs) => self.gen_logical_and(lhs, rhs, instructions),
             ExprKind::Or(lhs, rhs) => self.gen_logical_or(lhs, rhs, instructions),
@@ -617,28 +769,44 @@ impl TackyGen {
                 self.gen_inc_dec(expr, BinaryOp::Subtract, true, instructions)
             }
             ExprKind::Conditional(cond, then_expr, else_expr) => {
-                let result_tmp = self.fresh_tmp();
-                let result = Value::Var(result_tmp.clone());
+                let cond_value = self.gen_expr(cond, instructions);
+                let cond_bool =
+                    self.convert_value(cond_value, cond.r#type.clone(), Type::Int, instructions);
                 let false_label = self.fresh_label("cond.false");
                 let end_label = self.fresh_label("cond.end");
 
-                let condition_value = self.gen_expr(cond, instructions);
                 instructions.push(Instruction::JumpIfZero {
-                    condition: condition_value,
+                    condition: cond_bool,
                     target: false_label.clone(),
                 });
 
+                let result_tmp = self.fresh_tmp();
+                self.record_temp(&result_tmp, &result_type);
+                let result = Value::Var(result_tmp.clone());
+
                 let then_value = self.gen_expr(then_expr, instructions);
+                let then_converted = self.convert_value(
+                    then_value,
+                    then_expr.r#type.clone(),
+                    result_type.clone(),
+                    instructions,
+                );
                 instructions.push(Instruction::Copy {
-                    src: then_value,
+                    src: then_converted,
                     dst: result.clone(),
                 });
                 instructions.push(Instruction::Jump(end_label.clone()));
 
                 instructions.push(Instruction::Label(false_label));
                 let else_value = self.gen_expr(else_expr, instructions);
+                let else_converted = self.convert_value(
+                    else_value,
+                    else_expr.r#type.clone(),
+                    result_type.clone(),
+                    instructions,
+                );
                 instructions.push(Instruction::Copy {
-                    src: else_value,
+                    src: else_converted,
                     dst: result.clone(),
                 });
                 instructions.push(Instruction::Label(end_label));
@@ -646,15 +814,18 @@ impl TackyGen {
                 Value::Var(result_tmp)
             }
             ExprKind::Assignment(lhs, rhs) => {
-                let rhs_value = self.gen_expr(rhs, instructions);
                 let lhs_expr = lhs.as_ref();
                 let name = match &lhs_expr.kind {
                     ExprKind::Var(name) => name.clone(),
-                    _ => panic!("Assignment target must be a variable"),
+                    _ => panic!("assignment target must be a variable"),
                 };
                 let target = self.value_for_variable(&name);
+                let target_type = self.type_of_value(&target);
+                let rhs_value = self.gen_expr(rhs, instructions);
+                let converted_rhs =
+                    self.convert_value(rhs_value, rhs.r#type.clone(), target_type, instructions);
                 instructions.push(Instruction::Copy {
-                    src: rhs_value,
+                    src: converted_rhs.clone(),
                     dst: target.clone(),
                 });
                 target
@@ -666,30 +837,69 @@ impl TackyGen {
         &mut self,
         name: &str,
         args: &[Expr],
+        result_type: &Type,
         instructions: &mut Vec<Instruction>,
     ) -> Value {
-        let arg_values = args
-            .iter()
-            .map(|arg| self.gen_expr(arg, instructions))
-            .collect::<Vec<_>>();
+        let signature = self
+            .function_signatures
+            .get(name)
+            .cloned()
+            .unwrap_or_else(|| panic!("call to undeclared function {name}"));
+        let (param_types, return_type) = signature;
+
+        if param_types.len() != args.len() {
+            panic!(
+                "function '{}' called with wrong number of arguments (expected {}, got {})",
+                name,
+                param_types.len(),
+                args.len()
+            );
+        }
+
+        let mut arg_values = Vec::new();
+        for (arg, expected_type) in args.iter().zip(param_types.iter()) {
+            let value = self.gen_expr(arg, instructions);
+            let converted = self.convert_value(
+                value,
+                arg.r#type.clone(),
+                expected_type.clone(),
+                instructions,
+            );
+            arg_values.push(converted);
+        }
+
         let tmp = self.fresh_tmp();
-        let dst = Value::Var(tmp.clone());
+        self.record_temp(&tmp, &return_type);
+        let dst = Value::Var(tmp);
         instructions.push(Instruction::FunCall {
             name: name.to_string(),
             args: arg_values,
             dst: dst.clone(),
         });
-        dst
+
+        if return_type == Type::Void {
+            dst
+        } else {
+            self.convert_value(dst, return_type, result_type.clone(), instructions)
+        }
     }
 
     fn gen_unary_expr(
         &mut self,
         op: UnaryOp,
         rhs: &Expr,
+        result_type: &Type,
         instructions: &mut Vec<Instruction>,
     ) -> Value {
-        let src = self.gen_expr(rhs, instructions);
+        let src_value = self.gen_expr(rhs, instructions);
+        let src = self.convert_value(
+            src_value,
+            rhs.r#type.clone(),
+            result_type.clone(),
+            instructions,
+        );
         let tmp = self.fresh_tmp();
+        self.record_temp(&tmp, result_type);
         let dst = Value::Var(tmp);
         instructions.push(Instruction::Unary {
             op,
@@ -704,11 +914,35 @@ impl TackyGen {
         op: BinaryOp,
         lhs: &Expr,
         rhs: &Expr,
+        result_type: &Type,
         instructions: &mut Vec<Instruction>,
     ) -> Value {
-        let src1 = self.gen_expr(lhs, instructions);
-        let src2 = self.gen_expr(rhs, instructions);
+        let lhs_value = self.gen_expr(lhs, instructions);
+        let rhs_value = self.gen_expr(rhs, instructions);
+
+        let (lhs_type, rhs_type) = match op {
+            BinaryOp::LeftShift | BinaryOp::RightShift => (lhs.r#type.clone(), Type::Int),
+            _ => match (lhs.r#type.clone(), rhs.r#type.clone()) {
+                (Type::Long, _) | (_, Type::Long) => (Type::Long, Type::Long),
+                _ => (Type::Int, Type::Int),
+            },
+        };
+
+        let src1 = self.convert_value(
+            lhs_value,
+            lhs.r#type.clone(),
+            lhs_type.clone(),
+            instructions,
+        );
+        let src2 = self.convert_value(
+            rhs_value,
+            rhs.r#type.clone(),
+            rhs_type.clone(),
+            instructions,
+        );
+
         let tmp = self.fresh_tmp();
+        self.record_temp(&tmp, result_type);
         let dst = Value::Var(tmp);
         instructions.push(Instruction::Binary {
             op,
@@ -730,25 +964,29 @@ impl TackyGen {
         let false_label = self.fresh_label("and.false");
         let end_label = self.fresh_label("and.end");
 
+        self.record_temp(&result_tmp, &Type::Int);
+
         instructions.push(Instruction::Copy {
-            src: Value::Constant(0),
+            src: Value::Constant(Const::Int(0)),
             dst: result.clone(),
         });
 
         let lhs_val = self.gen_expr(lhs, instructions);
+        let lhs_cond = self.convert_value(lhs_val, lhs.r#type.clone(), Type::Int, instructions);
         instructions.push(Instruction::JumpIfZero {
-            condition: lhs_val,
+            condition: lhs_cond,
             target: false_label.clone(),
         });
 
         let rhs_val = self.gen_expr(rhs, instructions);
+        let rhs_cond = self.convert_value(rhs_val, rhs.r#type.clone(), Type::Int, instructions);
         instructions.push(Instruction::JumpIfZero {
-            condition: rhs_val,
+            condition: rhs_cond,
             target: false_label.clone(),
         });
 
         instructions.push(Instruction::Copy {
-            src: Value::Constant(1),
+            src: Value::Constant(Const::Int(1)),
             dst: result.clone(),
         });
         instructions.push(Instruction::Jump(end_label.clone()));
@@ -769,27 +1007,31 @@ impl TackyGen {
         let true_label = self.fresh_label("or.true");
         let end_label = self.fresh_label("or.end");
 
+        self.record_temp(&result_tmp, &Type::Int);
+
         instructions.push(Instruction::Copy {
-            src: Value::Constant(0),
+            src: Value::Constant(Const::Int(0)),
             dst: result.clone(),
         });
 
         let lhs_val = self.gen_expr(lhs, instructions);
+        let lhs_cond = self.convert_value(lhs_val, lhs.r#type.clone(), Type::Int, instructions);
         instructions.push(Instruction::JumpIfNotZero {
-            condition: lhs_val,
+            condition: lhs_cond,
             target: true_label.clone(),
         });
 
         let rhs_val = self.gen_expr(rhs, instructions);
+        let rhs_cond = self.convert_value(rhs_val, rhs.r#type.clone(), Type::Int, instructions);
         instructions.push(Instruction::JumpIfNotZero {
-            condition: rhs_val,
+            condition: rhs_cond,
             target: true_label.clone(),
         });
 
         instructions.push(Instruction::Jump(end_label.clone()));
         instructions.push(Instruction::Label(true_label));
         instructions.push(Instruction::Copy {
-            src: Value::Constant(1),
+            src: Value::Constant(Const::Int(1)),
             dst: result.clone(),
         });
         instructions.push(Instruction::Label(end_label));
@@ -809,9 +1051,11 @@ impl TackyGen {
             _ => panic!("Increment/decrement target must be a variable"),
         };
         let target = self.value_for_variable(&name);
+        let target_type = self.type_of_value(&target);
 
         let original_value = if is_post {
             let tmp_name = self.fresh_tmp();
+            self.record_temp(&tmp_name, &target_type);
             let tmp = Value::Var(tmp_name.clone());
             instructions.push(Instruction::Copy {
                 src: target.clone(),
@@ -823,11 +1067,16 @@ impl TackyGen {
         };
 
         let updated_tmp_name = self.fresh_tmp();
+        self.record_temp(&updated_tmp_name, &target_type);
         let updated_tmp = Value::Var(updated_tmp_name.clone());
+        let one = match target_type {
+            Type::Long => Value::Constant(Const::Long(1)),
+            _ => Value::Constant(Const::Int(1)),
+        };
         instructions.push(Instruction::Binary {
             op,
             src1: target.clone(),
-            src2: Value::Constant(1),
+            src2: one,
             dst: updated_tmp.clone(),
         });
         instructions.push(Instruction::Copy {

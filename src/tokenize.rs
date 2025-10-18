@@ -139,6 +139,9 @@ pub enum TokenKind {
     #[token("int")]
     Int,
 
+    #[token("long")]
+    Long,
+
     #[token("static")]
     Static,
 
@@ -174,6 +177,13 @@ pub enum TokenKind {
 
     #[regex(r"([0-9]+)", |lex| lex.slice().parse::<i64>().unwrap(), priority = 5)]
     Integer(i64),
+
+    #[regex(
+        r"([0-9]+)[lL]",
+        |lex| lex.slice()[..lex.slice().len() - 1].parse::<i64>().unwrap(),
+        priority = 6
+    )]
+    LongInteger(i64),
 
     #[regex(r"[0-9]+\.[0-9]+", |lex| lex.slice().parse::<f64>().unwrap(), priority = 4)]
     Float(f64),

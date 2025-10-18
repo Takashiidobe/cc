@@ -11,9 +11,10 @@ pub enum StorageClass {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ExprKind {
-    Integer(i64),
+    Constant(Const),
     Var(String),
     FunctionCall(String, Vec<Expr>),
+    Cast(Type, Box<Expr>),
     Neg(Box<Expr>),
     BitNot(Box<Expr>),
     Conditional(Box<Expr>, Box<Expr>, Box<Expr>),
@@ -59,9 +60,15 @@ pub struct VariableDecl {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct ParameterDecl {
+    pub name: String,
+    pub r#type: Type,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct FunctionDecl {
     pub name: String,
-    pub params: Vec<String>,
+    pub params: Vec<ParameterDecl>,
     pub body: Option<Vec<Stmt>>,
     pub storage_class: Option<StorageClass>,
     pub return_type: Type,
@@ -127,7 +134,14 @@ pub enum ForInit {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Type {
     Int,
+    Long,
     Void,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum Const {
+    Int(i64),
+    Long(i64),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -179,6 +193,14 @@ impl Parser {
                     }
                     self.advance();
                     ty = Some(Type::Int);
+                    consumed_any = true;
+                }
+                TokenKind::Long => {
+                    if ty.is_some() {
+                        panic!("duplicate type specifier in declaration");
+                    }
+                    self.advance();
+                    ty = Some(Type::Long);
                     consumed_any = true;
                 }
                 TokenKind::Void => {
@@ -233,7 +255,7 @@ impl Parser {
         }
         matches!(
             self.tokens[self.pos].kind,
-            TokenKind::Int | TokenKind::Static | TokenKind::Extern
+            TokenKind::Int | TokenKind::Long | TokenKind::Static | TokenKind::Extern
         )
     }
 
@@ -307,7 +329,7 @@ impl Parser {
         return_type: Type,
         storage_class: Option<StorageClass>,
     ) -> Decl {
-        if return_type != Type::Int && return_type != Type::Void {
+        if return_type != Type::Int && return_type != Type::Void && return_type != Type::Long {
             panic!("Unsupported return type in function declaration");
         }
         self.skip(&TokenKind::LParen);
@@ -381,7 +403,7 @@ impl Parser {
         }
     }
 
-    fn parameters(&mut self) -> Vec<String> {
+    fn parameters(&mut self) -> Vec<ParameterDecl> {
         let mut params = Vec::new();
 
         if self.peek().kind == TokenKind::RParen {
@@ -397,7 +419,17 @@ impl Parser {
         }
 
         loop {
-            self.skip(&TokenKind::Int);
+            let ty = match self.peek().kind {
+                TokenKind::Int => {
+                    self.advance();
+                    Type::Int
+                }
+                TokenKind::Long => {
+                    self.advance();
+                    Type::Long
+                }
+                kind => panic!("Expected parameter type, found {kind:?}"),
+            };
             let name = match self.peek().kind.clone() {
                 TokenKind::Identifier(name) => {
                     self.advance();
@@ -405,7 +437,7 @@ impl Parser {
                 }
                 kind => panic!("Expected parameter name, found {kind:?}"),
             };
-            params.push(name);
+            params.push(ParameterDecl { name, r#type: ty });
 
             if self.peek().kind == TokenKind::Comma {
                 self.advance();
@@ -1077,6 +1109,32 @@ impl Parser {
     }
 
     fn unary(&mut self) -> Expr {
+        if self.peek().kind == TokenKind::LParen && self.is_cast_expression() {
+            let Token { start, .. } = self.peek();
+            self.advance(); // consume '('
+            let ty = match self.peek().kind {
+                TokenKind::Int => {
+                    self.advance();
+                    Type::Int
+                }
+                TokenKind::Long => {
+                    self.advance();
+                    Type::Long
+                }
+                kind => panic!("Unsupported cast target: {kind:?}"),
+            };
+            self.skip(&TokenKind::RParen);
+            let expr = self.unary();
+            let end = expr.end;
+            return Expr {
+                kind: ExprKind::Cast(ty.clone(), Box::new(expr)),
+                start,
+                end,
+                source: self.source_slice(start, end),
+                r#type: ty,
+            };
+        }
+
         let token = self.peek();
         match token.kind.clone() {
             TokenKind::Plus => {
@@ -1224,11 +1282,21 @@ impl Parser {
             TokenKind::Integer(n) => {
                 self.advance();
                 Expr {
-                    kind: ExprKind::Integer(n),
+                    kind: ExprKind::Constant(Const::Int(n)),
                     start,
                     end,
                     source,
                     r#type: Type::Int,
+                }
+            }
+            TokenKind::LongInteger(n) => {
+                self.advance();
+                Expr {
+                    kind: ExprKind::Constant(Const::Long(n)),
+                    start,
+                    end,
+                    source,
+                    r#type: Type::Long,
                 }
             }
             TokenKind::Identifier(name) => {
@@ -1249,6 +1317,25 @@ impl Parser {
             }
             kind => panic!("Expected primary, found {kind:?}"),
         }
+    }
+
+    fn is_cast_expression(&self) -> bool {
+        if self.pos + 1 >= self.tokens.len() {
+            return false;
+        }
+        let mut idx = self.pos + 1;
+        let mut saw_type = false;
+        while idx < self.tokens.len() {
+            match self.tokens[idx].kind {
+                TokenKind::Int | TokenKind::Long => {
+                    saw_type = true;
+                    idx += 1;
+                }
+                TokenKind::RParen => return saw_type,
+                _ => return false,
+            }
+        }
+        false
     }
 
     fn source_slice(&self, start: usize, end: usize) -> String {
