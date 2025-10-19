@@ -88,6 +88,18 @@ pub enum Instruction {
         from: Type,
         to: Type,
     },
+    GetAddress {
+        src: Value,
+        dst: Value,
+    },
+    Load {
+        src_ptr: Value,
+        dst: Value,
+    },
+    Store {
+        src: Value,
+        dst_ptr: Value,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -461,6 +473,21 @@ impl TackyGen {
                 from: from_type.clone(),
                 to: to_type.clone(),
             });
+        } else if Self::is_pointer_type(&from_type) && Self::is_pointer_type(&to_type) {
+            instructions.push(Instruction::Copy {
+                src: value,
+                dst: dst.clone(),
+            });
+        } else if Self::is_pointer_type(&from_type) && Self::is_integer_type(&to_type) {
+            instructions.push(Instruction::Copy {
+                src: value,
+                dst: dst.clone(),
+            });
+        } else if Self::is_integer_type(&from_type) && Self::is_pointer_type(&to_type) {
+            instructions.push(Instruction::Copy {
+                src: value,
+                dst: dst.clone(),
+            });
         } else {
             panic!(
                 "unsupported conversion from {:?} to {:?}",
@@ -509,6 +536,8 @@ impl TackyGen {
             Type::Long | Type::ULong => 64,
             Type::Double => 64,
             Type::Void => panic!("void type has no bit width"),
+            Type::Pointer(_) => 64,
+            Type::FunType(_, _) => panic!("function type has no bit width"),
         }
     }
 
@@ -518,6 +547,10 @@ impl TackyGen {
 
     fn is_integer_type(ty: &Type) -> bool {
         matches!(ty, Type::Int | Type::UInt | Type::Long | Type::ULong)
+    }
+
+    fn is_pointer_type(ty: &Type) -> bool {
+        matches!(ty, Type::Pointer(_))
     }
 
     fn is_floating_type(ty: &Type) -> bool {
@@ -537,6 +570,7 @@ impl TackyGen {
 
             Type::Void => panic!("void type has no rank"),
             Type::Double => panic!("double type has no integer rank"),
+            Type::Pointer(_) | Type::FunType(_, _) => panic!("pointer type has no rank"),
         }
     }
 
@@ -594,6 +628,8 @@ impl TackyGen {
                 Type::ULong => Const::ULong(value as u64),
                 Type::Double => unreachable!(),
                 Type::Void => panic!("cannot convert constant to void"),
+                Type::Pointer(_) => panic!("cannot convert floating constant to pointer"),
+                Type::FunType(_, _) => panic!("cannot convert floating constant to function type"),
             };
         }
 
@@ -637,6 +673,8 @@ impl TackyGen {
             Type::ULong => Const::ULong(raw as u64),
             Type::Double => unreachable!(),
             Type::Void => panic!("cannot convert constant to void"),
+            Type::Pointer(_) => panic!("cannot convert integer constant to pointer"),
+            Type::FunType(_, _) => panic!("cannot convert integer constant to function type"),
         }
     }
 
@@ -855,6 +893,24 @@ impl TackyGen {
             ExprKind::Not(rhs) => {
                 self.gen_unary_expr(UnaryOp::Not, rhs, &result_type, instructions)
             }
+            ExprKind::AddrOf(inner) => {
+                let (ptr_value, ptr_type) = self.gen_lvalue_address(inner, instructions);
+                self.convert_value(ptr_value, ptr_type, result_type.clone(), instructions)
+            }
+            ExprKind::Dereference(inner) => {
+                let pointer_type = Type::Pointer(Box::new(result_type.clone()));
+                let ptr_value = self.gen_expr(inner, instructions);
+                let ptr =
+                    self.convert_value(ptr_value, inner.r#type.clone(), pointer_type, instructions);
+                let tmp = self.fresh_tmp();
+                self.record_temp(&tmp, &result_type);
+                let dst = Value::Var(tmp.clone());
+                instructions.push(Instruction::Load {
+                    src_ptr: ptr,
+                    dst: dst.clone(),
+                });
+                dst
+            }
             ExprKind::Add(lhs, rhs) => {
                 self.gen_binary_expr(BinaryOp::Add, lhs, rhs, &result_type, instructions)
             }
@@ -887,10 +943,24 @@ impl TackyGen {
                 instructions,
             ),
             ExprKind::Equal(lhs, rhs) => {
-                self.gen_binary_expr(BinaryOp::Equal, lhs, rhs, &result_type, instructions)
+                if Self::is_pointer_type(&lhs.r#type) || Self::is_pointer_type(&rhs.r#type) {
+                    self.gen_pointer_equality(BinaryOp::Equal, lhs, rhs, &result_type, instructions)
+                } else {
+                    self.gen_binary_expr(BinaryOp::Equal, lhs, rhs, &result_type, instructions)
+                }
             }
             ExprKind::NotEqual(lhs, rhs) => {
-                self.gen_binary_expr(BinaryOp::NotEqual, lhs, rhs, &result_type, instructions)
+                if Self::is_pointer_type(&lhs.r#type) || Self::is_pointer_type(&rhs.r#type) {
+                    self.gen_pointer_equality(
+                        BinaryOp::NotEqual,
+                        lhs,
+                        rhs,
+                        &result_type,
+                        instructions,
+                    )
+                } else {
+                    self.gen_binary_expr(BinaryOp::NotEqual, lhs, rhs, &result_type, instructions)
+                }
             }
             ExprKind::BitAnd(lhs, rhs) => {
                 self.gen_binary_expr(BinaryOp::BitAnd, lhs, rhs, &result_type, instructions)
@@ -966,23 +1036,70 @@ impl TackyGen {
 
                 Value::Var(result_tmp)
             }
-            ExprKind::Assignment(lhs, rhs) => {
-                let lhs_expr = lhs.as_ref();
-                let name = match &lhs_expr.kind {
-                    ExprKind::Var(name) => name.clone(),
-                    _ => panic!("assignment target must be a variable"),
-                };
-                let target = self.value_for_variable(&name);
-                let target_type = self.type_of_value(&target);
-                let rhs_value = self.gen_expr(rhs, instructions);
-                let converted_rhs =
-                    self.convert_value(rhs_value, rhs.r#type.clone(), target_type, instructions);
-                instructions.push(Instruction::Copy {
-                    src: converted_rhs.clone(),
-                    dst: target.clone(),
+            ExprKind::Assignment(lhs, rhs) => match &lhs.kind {
+                ExprKind::Var(name) => {
+                    let target = self.value_for_variable(name);
+                    let target_type = self.type_of_value(&target);
+                    let rhs_value = self.gen_expr(rhs, instructions);
+                    let converted_rhs = self.convert_value(
+                        rhs_value,
+                        rhs.r#type.clone(),
+                        target_type.clone(),
+                        instructions,
+                    );
+                    instructions.push(Instruction::Copy {
+                        src: converted_rhs.clone(),
+                        dst: target.clone(),
+                    });
+                    converted_rhs
+                }
+                ExprKind::Dereference(ptr_expr) => {
+                    let pointer_type = ptr_expr.r#type.clone();
+                    let expected_ptr = Type::Pointer(Box::new(lhs.r#type.clone()));
+                    let ptr_value = self.gen_expr(ptr_expr, instructions);
+                    let ptr =
+                        self.convert_value(ptr_value, pointer_type, expected_ptr, instructions);
+                    let rhs_value = self.gen_expr(rhs, instructions);
+                    let converted_rhs = self.convert_value(
+                        rhs_value,
+                        rhs.r#type.clone(),
+                        lhs.r#type.clone(),
+                        instructions,
+                    );
+                    instructions.push(Instruction::Store {
+                        src: converted_rhs.clone(),
+                        dst_ptr: ptr,
+                    });
+                    converted_rhs
+                }
+                _ => panic!("assignment target must be assignable"),
+            },
+        }
+    }
+
+    fn gen_lvalue_address(
+        &mut self,
+        expr: &Expr,
+        instructions: &mut Vec<Instruction>,
+    ) -> (Value, Type) {
+        match &expr.kind {
+            ExprKind::Var(name) => {
+                let base = self.value_for_variable(name);
+                let ptr_type = Type::Pointer(Box::new(expr.r#type.clone()));
+                let tmp = self.fresh_tmp();
+                self.record_temp(&tmp, &ptr_type);
+                let dst = Value::Var(tmp);
+                instructions.push(Instruction::GetAddress {
+                    src: base,
+                    dst: dst.clone(),
                 });
-                target
+                (dst, ptr_type)
             }
+            ExprKind::Dereference(inner) => {
+                let value = self.gen_expr(inner, instructions);
+                (value, inner.r#type.clone())
+            }
+            _ => panic!("unsupported lvalue for address-of"),
         }
     }
 
@@ -1101,6 +1218,34 @@ impl TackyGen {
             op,
             src1,
             src2,
+            dst: dst.clone(),
+        });
+        dst
+    }
+
+    fn gen_pointer_equality(
+        &mut self,
+        op: BinaryOp,
+        lhs: &Expr,
+        rhs: &Expr,
+        result_type: &Type,
+        instructions: &mut Vec<Instruction>,
+    ) -> Value {
+        let lhs_value = self.gen_expr(lhs, instructions);
+        let rhs_value = self.gen_expr(rhs, instructions);
+
+        let lhs_converted =
+            self.convert_value(lhs_value, lhs.r#type.clone(), Type::ULong, instructions);
+        let rhs_converted =
+            self.convert_value(rhs_value, rhs.r#type.clone(), Type::ULong, instructions);
+
+        let tmp = self.fresh_tmp();
+        self.record_temp(&tmp, result_type);
+        let dst = Value::Var(tmp);
+        instructions.push(Instruction::Binary {
+            op,
+            src1: lhs_converted,
+            src2: rhs_converted,
             dst: dst.clone(),
         });
         dst
@@ -1229,6 +1374,8 @@ impl TackyGen {
             Type::ULong => Value::Constant(Const::ULong(1)),
             Type::Double => Value::Constant(Const::Double(1.0)),
             Type::Void => panic!("cannot increment void"),
+            Type::Pointer(_) => panic!("pointer increment not supported"),
+            Type::FunType(_, _) => panic!("function type increment not supported"),
         };
         instructions.push(Instruction::Binary {
             op,

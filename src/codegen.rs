@@ -129,9 +129,12 @@ impl<W: Write> Codegen<W> {
         }
         match function.return_type {
             Type::Int | Type::UInt => writeln!(self.buf, "  movl $0, %eax")?,
-            Type::Long | Type::ULong => writeln!(self.buf, "  movq $0, %rax")?,
+            Type::Long | Type::ULong | Type::Pointer(_) => writeln!(self.buf, "  movq $0, %rax")?,
             Type::Double => writeln!(self.buf, "  xorpd %xmm0, %xmm0")?,
             Type::Void => {}
+            Type::FunType(_, _) => {
+                panic!("unsupported function return type")
+            }
         }
         let result = self.emit_epilogue();
         self.value_types.clear();
@@ -161,6 +164,18 @@ impl<W: Write> Codegen<W> {
                 Instruction::Copy { src, dst } => {
                     Self::collect_value(&mut vars, src);
                     Self::collect_value(&mut vars, dst);
+                }
+                Instruction::GetAddress { src, dst } => {
+                    Self::collect_value(&mut vars, src);
+                    Self::collect_value(&mut vars, dst);
+                }
+                Instruction::Load { src_ptr, dst } => {
+                    Self::collect_value(&mut vars, src_ptr);
+                    Self::collect_value(&mut vars, dst);
+                }
+                Instruction::Store { src, dst_ptr } => {
+                    Self::collect_value(&mut vars, src);
+                    Self::collect_value(&mut vars, dst_ptr);
                 }
                 Instruction::FunCall { args, dst, .. } => {
                     for arg in args {
@@ -277,6 +292,9 @@ impl<W: Write> Codegen<W> {
                 }
             }
             Instruction::Copy { src, dst } => self.emit_copy(src, dst),
+            Instruction::GetAddress { src, dst } => self.emit_get_address(src, dst),
+            Instruction::Load { src_ptr, dst } => self.emit_load(src_ptr, dst),
+            Instruction::Store { src, dst_ptr } => self.emit_store(src, dst_ptr),
             Instruction::FunCall { name, args, dst } => self.emit_fun_call(name, args, dst),
             Instruction::Unary { op, src, dst } => self.emit_unary(*op, src, dst),
             Instruction::Binary {
@@ -327,6 +345,89 @@ impl<W: Write> Codegen<W> {
 
         self.load_value_into_reg(src, Reg::R11)?;
         self.store_reg_into_value(Reg::R11, dst)
+    }
+
+    fn emit_get_address(&mut self, src: &Value, dst: &Value) -> Result<()> {
+        if matches!(dst, Value::Constant(_)) {
+            panic!("address destination cannot be constant");
+        }
+
+        let reg = Reg::R11;
+        match src {
+            Value::Var(name) => {
+                let operand = self.stack_operand(name);
+                writeln!(
+                    self.buf,
+                    "  leaq {}, {}",
+                    operand,
+                    Codegen::<W>::reg_name(reg)
+                )?;
+            }
+            Value::Global(name) => {
+                writeln!(
+                    self.buf,
+                    "  leaq {}(%rip), {}",
+                    name,
+                    Codegen::<W>::reg_name(reg)
+                )?;
+            }
+            Value::Constant(_) => panic!("cannot take address of constant"),
+        }
+
+        self.store_reg_into_value(reg, dst)
+    }
+
+    fn emit_load(&mut self, src_ptr: &Value, dst: &Value) -> Result<()> {
+        let dst_ty = self.value_type(dst);
+        self.load_value_into_reg(src_ptr, Reg::R11)?;
+        match dst_ty {
+            Type::Double => {
+                writeln!(
+                    self.buf,
+                    "  movsd ({}), {}",
+                    Self::reg_name(Reg::R11),
+                    Self::xmm_name(0)
+                )?;
+                self.store_xmm_into_value(0, dst)
+            }
+            _ => {
+                let reg = Reg::R10;
+                writeln!(
+                    self.buf,
+                    "  {} ({}), {}",
+                    self.mov_instr(&dst_ty),
+                    Self::reg_name(Reg::R11),
+                    Codegen::<W>::reg_name_for_type(reg, &dst_ty)
+                )?;
+                self.store_reg_into_value(reg, dst)
+            }
+        }
+    }
+
+    fn emit_store(&mut self, src: &Value, dst_ptr: &Value) -> Result<()> {
+        let src_ty = self.value_type(src);
+        self.load_value_into_reg(dst_ptr, Reg::R11)?;
+        match src_ty {
+            Type::Double => {
+                self.load_value_into_xmm(src, 0)?;
+                writeln!(
+                    self.buf,
+                    "  movsd {}, ({})",
+                    Self::xmm_name(0),
+                    Self::reg_name(Reg::R11)
+                )
+            }
+            _ => {
+                self.load_value_into_reg(src, Reg::R10)?;
+                writeln!(
+                    self.buf,
+                    "  {} {}, ({})",
+                    self.mov_instr(&src_ty),
+                    Codegen::<W>::reg_name_for_type(Reg::R10, &src_ty),
+                    Self::reg_name(Reg::R11)
+                )
+            }
+        }
     }
 
     fn emit_unary(&mut self, op: UnaryOp, src: &Value, dst: &Value) -> Result<()> {
@@ -498,6 +599,8 @@ impl<W: Write> Codegen<W> {
                     }
                     Type::Void => panic!("division on void type"),
                     Type::Double => panic!("integer division on double type"),
+                    Type::Pointer(_) => panic!("division on pointer type"),
+                    Type::FunType(_, _) => panic!("division on function type"),
                 }
 
                 match op {
@@ -1000,6 +1103,8 @@ impl<W: Write> Codegen<W> {
             Type::Long | Type::ULong => 8,
             Type::Double => 8,
             Type::Void => 0,
+            Type::Pointer(_) => 8,
+            Type::FunType(_, _) => panic!("function type has no size"),
         }
     }
 
@@ -1009,6 +1114,8 @@ impl<W: Write> Codegen<W> {
             Type::Int | Type::UInt => 4,
             Type::Double => 8,
             Type::Void => 1,
+            Type::Pointer(_) => 8,
+            Type::FunType(_, _) => panic!("function type has no alignment"),
         }
     }
 
@@ -1017,15 +1124,18 @@ impl<W: Write> Codegen<W> {
             Type::Int | Type::UInt => "movl",
             Type::Long | Type::ULong => "movq",
             Type::Void => "movq",
+            Type::Pointer(_) => "movq",
             Type::Double => panic!("mov instruction requested for double"),
+            Type::FunType(_, _) => panic!("function type move not supported"),
         }
     }
 
     fn reg_name_for_type(reg: Reg, ty: &Type) -> &'static str {
         match ty {
             Type::Int | Type::UInt => Self::reg_name32(reg),
-            Type::Long | Type::ULong | Type::Void => Self::reg_name(reg),
+            Type::Long | Type::ULong | Type::Void | Type::Pointer(_) => Self::reg_name(reg),
             Type::Double => panic!("general-purpose register requested for double"),
+            Type::FunType(_, _) => panic!("function type register request"),
         }
     }
 

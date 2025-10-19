@@ -1,4 +1,5 @@
 use crate::tokenize::{Token, TokenKind};
+use std::mem;
 
 pub type Expr = Node<ExprKind>;
 pub type Stmt = Node<StmtKind>;
@@ -35,6 +36,9 @@ pub enum ExprKind {
     Or(Box<Expr>, Box<Expr>),
     And(Box<Expr>, Box<Expr>),
     Not(Box<Expr>),
+
+    AddrOf(Box<Expr>),
+    Dereference(Box<Expr>),
 
     BitAnd(Box<Expr>, Box<Expr>),
     Xor(Box<Expr>, Box<Expr>),
@@ -139,6 +143,12 @@ pub enum Type {
     ULong,
     Double,
     Void,
+    Pointer(Box<Type>),
+    FunType(Vec<Type>, Box<Type>),
+}
+
+fn is_plain_void(ty: &Type) -> bool {
+    matches!(ty, Type::Void)
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -169,6 +179,56 @@ pub struct Parser {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Program(pub Vec<Decl>);
+
+#[derive(Debug, Clone, PartialEq)]
+struct ParsedDeclarator {
+    name: String,
+    type_expr: TypeExpr,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum TypeExpr {
+    Base,
+    Pointer(Box<TypeExpr>),
+    Function {
+        params: Vec<ParameterDecl>,
+        ret: Box<TypeExpr>,
+    },
+}
+
+impl TypeExpr {
+    fn add_pointer(self) -> Self {
+        match self {
+            TypeExpr::Function { params, ret } => TypeExpr::Function {
+                params,
+                ret: Box::new(ret.add_pointer()),
+            },
+            other => TypeExpr::Pointer(Box::new(other)),
+        }
+    }
+
+    fn add_function(self, params: Vec<ParameterDecl>) -> Self {
+        match self {
+            TypeExpr::Pointer(inner) => TypeExpr::Pointer(Box::new(inner.add_function(params))),
+            other => TypeExpr::Function {
+                params,
+                ret: Box::new(other),
+            },
+        }
+    }
+
+    fn apply(&self, base: Type) -> Type {
+        match self {
+            TypeExpr::Base => base,
+            TypeExpr::Pointer(inner) => Type::Pointer(Box::new(inner.apply(base))),
+            TypeExpr::Function { params, ret } => {
+                let param_types = params.iter().map(|p| p.r#type.clone()).collect();
+                let return_type = ret.apply(base);
+                Type::FunType(param_types, Box::new(return_type))
+            }
+        }
+    }
+}
 
 #[derive(Debug, Clone, Default)]
 struct TypeSpecifierState {
@@ -356,13 +416,89 @@ impl Parser {
         (ty, storage)
     }
 
-    fn expect_identifier(&mut self) -> String {
-        match self.peek().kind.clone() {
-            TokenKind::Identifier(name) => {
-                self.advance();
-                name
+    fn parse_declarator(&mut self) -> ParsedDeclarator {
+        dbg!(self.peek());
+        if self.peek().kind == TokenKind::Star {
+            self.advance();
+            let mut inner = self.parse_declarator();
+            let current = mem::replace(&mut inner.type_expr, TypeExpr::Base);
+            inner.type_expr = current.add_pointer();
+            inner
+        } else {
+            self.parse_direct_declarator()
+        }
+    }
+
+    fn parse_direct_declarator(&mut self) -> ParsedDeclarator {
+        let mut declarator = if let TokenKind::Identifier(name) = self.peek().kind.clone() {
+            self.advance();
+            ParsedDeclarator {
+                name,
+                type_expr: TypeExpr::Base,
             }
-            kind => panic!("Expected identifier, found {kind:?}"),
+        } else if self.peek().kind == TokenKind::LParen {
+            self.advance();
+            let declarator = self.parse_declarator();
+            self.skip(&TokenKind::RParen);
+            declarator
+        } else {
+            panic!(
+                "expected identifier or '(' in declarator, found {:?}",
+                self.peek()
+            );
+        };
+
+        while self.pos < self.tokens.len() && self.peek().kind == TokenKind::LParen {
+            self.advance();
+            let params = self.parse_parameter_list();
+            self.skip(&TokenKind::RParen);
+            let current = mem::replace(&mut declarator.type_expr, TypeExpr::Base);
+            declarator.type_expr = current.add_function(params);
+        }
+
+        declarator
+    }
+
+    fn parse_parameter_list(&mut self) -> Vec<ParameterDecl> {
+        if self.peek().kind == TokenKind::RParen {
+            return Vec::new();
+        }
+
+        if self.peek().kind == TokenKind::Void {
+            if self.pos + 1 < self.tokens.len()
+                && self.tokens[self.pos + 1].kind == TokenKind::RParen
+            {
+                self.advance();
+                return Vec::new();
+            }
+        }
+
+        let mut params = Vec::new();
+
+        loop {
+            let param = self.parse_parameter();
+            if is_plain_void(&param.r#type) {
+                panic!("'void' parameter must be the only parameter");
+            }
+            params.push(param);
+
+            if self.peek().kind == TokenKind::Comma {
+                self.advance();
+                continue;
+            }
+            break;
+        }
+
+        params
+    }
+
+    fn parse_parameter(&mut self) -> ParameterDecl {
+        let base_type = self.parse_type_specifiers();
+        let declarator = self.parse_declarator();
+        let param_type = declarator.type_expr.apply(base_type);
+        ParameterDecl {
+            name: declarator.name,
+            r#type: param_type,
         }
     }
 
@@ -386,12 +522,16 @@ impl Parser {
 
     fn variable_declaration_stmt(&mut self) -> Stmt {
         let Token { start, .. } = self.peek();
-        let (ty, storage_class) = self.parse_specifiers();
-        if ty == Type::Void {
+        let (base_type, storage_class) = self.parse_specifiers();
+        let declarator = self.parse_declarator();
+        let name = declarator.name.clone();
+        let var_type = declarator.type_expr.apply(base_type);
+        if is_plain_void(&var_type) {
             panic!("variable declared with void type");
         }
-
-        let name = self.expect_identifier();
+        if matches!(var_type, Type::FunType(_, _)) {
+            panic!("function declarations are not allowed in block scope");
+        }
         let init = if self.peek().kind == TokenKind::Equal {
             self.advance();
             Some(self.expr())
@@ -409,7 +549,7 @@ impl Parser {
             name,
             init,
             storage_class,
-            r#type: ty.clone(),
+            r#type: var_type.clone(),
             is_definition,
         };
 
@@ -418,7 +558,7 @@ impl Parser {
             start,
             end,
             source,
-            r#type: ty,
+            r#type: var_type,
         }
     }
 
@@ -437,13 +577,23 @@ impl Parser {
         }
 
         let Token { start, .. } = self.peek();
-        let (ty, storage_class) = self.parse_specifiers();
-        let name = self.expect_identifier();
+        let (base_type, storage_class) = self.parse_specifiers();
+        let declarator = self.parse_declarator();
+        let name = declarator.name.clone();
 
-        if matches!(self.peek().kind, TokenKind::LParen) {
-            self.parse_function_declaration(start, name, ty, storage_class)
-        } else {
-            self.parse_variable_declaration(start, name, ty, storage_class)
+        match declarator.type_expr {
+            TypeExpr::Function { params, ret } => {
+                let return_type = ret.apply(base_type);
+                self.parse_function_declaration(start, name, params, return_type, storage_class)
+            }
+            type_expr => {
+                let var_type = type_expr.apply(base_type);
+                if is_plain_void(&var_type) {
+                    panic!("variable '{name}' declared with void type");
+                }
+
+                self.parse_variable_declaration(start, name, var_type, storage_class)
+            }
         }
     }
 
@@ -451,19 +601,10 @@ impl Parser {
         &mut self,
         start: usize,
         name: String,
+        params: Vec<ParameterDecl>,
         return_type: Type,
         storage_class: Option<StorageClass>,
     ) -> Decl {
-        if !matches!(
-            return_type,
-            Type::Int | Type::Void | Type::Long | Type::UInt | Type::ULong | Type::Double
-        ) {
-            panic!("Unsupported return type in function declaration");
-        }
-        self.skip(&TokenKind::LParen);
-        let params = self.parameters();
-        self.skip(&TokenKind::RParen);
-
         let body = if self.pos < self.tokens.len() && self.peek().kind == TokenKind::LBrace {
             self.advance();
             let stmts = self.stmts();
@@ -498,8 +639,8 @@ impl Parser {
         ty: Type,
         storage_class: Option<StorageClass>,
     ) -> Decl {
-        if ty == Type::Void {
-            panic!("variable '{name}' declared with void type");
+        if matches!(ty, Type::FunType(_, _)) {
+            panic!("variable '{name}' declared with function type");
         }
 
         let init = if self.peek().kind == TokenKind::Equal {
@@ -529,40 +670,6 @@ impl Parser {
             end,
             source,
         }
-    }
-
-    fn parameters(&mut self) -> Vec<ParameterDecl> {
-        let mut params = Vec::new();
-
-        if self.peek().kind == TokenKind::RParen {
-            return params;
-        }
-
-        if self.peek().kind == TokenKind::Void {
-            if self.pos + 1 < self.tokens.len()
-                && self.tokens[self.pos + 1].kind == TokenKind::RParen
-            {
-                self.advance();
-                return params;
-            }
-        }
-
-        loop {
-            let ty = self.parse_type_specifiers();
-            if matches!(ty, Type::Void) {
-                panic!("'void' parameter must be the only parameter");
-            }
-            let name = self.expect_identifier();
-            params.push(ParameterDecl { name, r#type: ty });
-
-            if self.peek().kind == TokenKind::Comma {
-                self.advance();
-                continue;
-            }
-            break;
-        }
-
-        params
     }
 
     fn stmts(&mut self) -> Vec<Stmt> {
@@ -939,7 +1046,7 @@ impl Parser {
             source,
         } = self.peek()
         {
-            if !matches!(kind, TokenKind::Ampersand) {
+            if !matches!(kind, TokenKind::DoubleAmpersand) {
                 break;
             }
 
@@ -1228,19 +1335,24 @@ impl Parser {
         if self.peek().kind == TokenKind::LParen && self.is_cast_expression() {
             let Token { start, .. } = self.peek();
             self.advance(); // consume '('
-            let ty = self.parse_type_specifiers();
-            if matches!(ty, Type::Void) {
+            let base_type = self.parse_type_specifiers();
+            let mut cast_type = base_type;
+            while self.peek().kind == TokenKind::Star {
+                self.advance();
+                cast_type = Type::Pointer(Box::new(cast_type));
+            }
+            if is_plain_void(&cast_type) {
                 panic!("Unsupported cast target: void");
             }
             self.skip(&TokenKind::RParen);
             let expr = self.unary();
             let end = expr.end;
             return Expr {
-                kind: ExprKind::Cast(ty.clone(), Box::new(expr)),
+                kind: ExprKind::Cast(cast_type.clone(), Box::new(expr)),
                 start,
                 end,
                 source: self.source_slice(start, end),
-                r#type: ty,
+                r#type: cast_type,
             };
         }
 
@@ -1283,6 +1395,32 @@ impl Parser {
                 let end = expr.end;
                 Expr {
                     kind: ExprKind::Not(Box::new(expr)),
+                    start,
+                    end,
+                    source: self.source_slice(start, end),
+                    r#type: Type::Int,
+                }
+            }
+            TokenKind::Ampersand => {
+                self.advance();
+                let expr = self.unary();
+                let start = token.start;
+                let end = expr.end;
+                Expr {
+                    kind: ExprKind::AddrOf(Box::new(expr)),
+                    start,
+                    end,
+                    source: self.source_slice(start, end),
+                    r#type: Type::Int,
+                }
+            }
+            TokenKind::Star => {
+                self.advance();
+                let expr = self.unary();
+                let start = token.start;
+                let end = expr.end;
+                Expr {
+                    kind: ExprKind::Dereference(Box::new(expr)),
                     start,
                     end,
                     source: self.source_slice(start, end),
@@ -1479,6 +1617,12 @@ impl Parser {
                 | TokenKind::Const => {
                     state.add(kind);
                     consumed_any = true;
+                    idx += 1;
+                }
+                TokenKind::Star => {
+                    if !consumed_any {
+                        return false;
+                    }
                     idx += 1;
                 }
                 TokenKind::RParen => {

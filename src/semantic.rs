@@ -233,7 +233,7 @@ impl SemanticAnalyzer {
                 else_branch,
             } => {
                 let condition = self.analyze_expr(condition);
-                self.ensure_integer_type(&condition.r#type, "if condition");
+                self.ensure_condition_type(&condition.r#type, "if condition");
                 StmtKind::If {
                     condition,
                     then_branch: Box::new(self.analyze_stmt(*then_branch)),
@@ -246,7 +246,7 @@ impl SemanticAnalyzer {
                 loop_id,
             } => {
                 let condition = self.analyze_expr(condition);
-                self.ensure_integer_type(&condition.r#type, "while condition");
+                self.ensure_condition_type(&condition.r#type, "while condition");
                 StmtKind::While {
                     condition,
                     body: Box::new(self.analyze_stmt(*body)),
@@ -259,7 +259,7 @@ impl SemanticAnalyzer {
                 loop_id,
             } => {
                 let condition = self.analyze_expr(condition);
-                self.ensure_integer_type(&condition.r#type, "do-while condition");
+                self.ensure_condition_type(&condition.r#type, "do-while condition");
                 StmtKind::DoWhile {
                     body: Box::new(self.analyze_stmt(*body)),
                     condition,
@@ -277,7 +277,7 @@ impl SemanticAnalyzer {
                 let init = self.analyze_for_init(init);
                 let condition = condition.map(|expr| {
                     let analyzed = self.analyze_expr(expr);
-                    self.ensure_integer_type(&analyzed.r#type, "for condition");
+                    self.ensure_condition_type(&analyzed.r#type, "for condition");
                     analyzed
                 });
                 let post = post.map(|expr| self.analyze_expr(expr));
@@ -399,7 +399,7 @@ impl SemanticAnalyzer {
             }
             ExprKind::Not(expr) => {
                 let expr = self.analyze_expr(*expr);
-                self.ensure_integer_type(&expr.r#type, "logical not");
+                self.ensure_condition_type(&expr.r#type, "logical not");
                 Expr {
                     kind: ExprKind::Not(Box::new(expr)),
                     start,
@@ -408,9 +408,40 @@ impl SemanticAnalyzer {
                     r#type: Type::Int,
                 }
             }
+            ExprKind::AddrOf(expr) => {
+                let expr = self.analyze_expr(*expr);
+                self.ensure_lvalue(&expr, "address-of operand");
+                let ty = Type::Pointer(Box::new(expr.r#type.clone()));
+                Expr {
+                    kind: ExprKind::AddrOf(Box::new(expr)),
+                    start,
+                    end,
+                    source,
+                    r#type: ty,
+                }
+            }
+            ExprKind::Dereference(expr) => {
+                let expr = self.analyze_expr(*expr);
+                let ty = match &expr.r#type {
+                    Type::Pointer(inner) => {
+                        if matches!(inner.as_ref(), Type::Void) {
+                            panic!("cannot dereference void pointer");
+                        }
+                        inner.as_ref().clone()
+                    }
+                    other => panic!("cannot dereference non-pointer type {other:?}"),
+                };
+                Expr {
+                    kind: ExprKind::Dereference(Box::new(expr)),
+                    start,
+                    end,
+                    source,
+                    r#type: ty,
+                }
+            }
             ExprKind::Conditional(cond, then_expr, else_expr) => {
                 let cond = self.analyze_expr(*cond);
-                self.ensure_integer_type(&cond.r#type, "conditional condition");
+                self.ensure_condition_type(&cond.r#type, "conditional condition");
                 let then_expr = self.analyze_expr(*then_expr);
                 self.ensure_numeric_type(&then_expr.r#type, "conditional arm");
                 let else_expr = self.analyze_expr(*else_expr);
@@ -444,10 +475,10 @@ impl SemanticAnalyzer {
                 self.analyze_integer_binary(*lhs, *rhs, start, end, source, ExprKind::Rem)
             }
             ExprKind::Equal(lhs, rhs) => {
-                self.analyze_comparison(*lhs, *rhs, start, end, source, ExprKind::Equal)
+                self.analyze_equality(*lhs, *rhs, start, end, source, ExprKind::Equal)
             }
             ExprKind::NotEqual(lhs, rhs) => {
-                self.analyze_comparison(*lhs, *rhs, start, end, source, ExprKind::NotEqual)
+                self.analyze_equality(*lhs, *rhs, start, end, source, ExprKind::NotEqual)
             }
             ExprKind::LessThan(lhs, rhs) => {
                 self.analyze_comparison(*lhs, *rhs, start, end, source, ExprKind::LessThan)
@@ -506,9 +537,7 @@ impl SemanticAnalyzer {
             }
             ExprKind::Assignment(lhs, rhs) => {
                 let lhs = self.analyze_expr(*lhs);
-                if !matches!(lhs.kind, ExprKind::Var(_)) {
-                    panic!("left-hand side of assignment must be a variable");
-                }
+                self.ensure_lvalue(&lhs, "assignment left-hand side");
                 let lhs_type = lhs.r#type.clone();
                 let rhs = self.analyze_expr(*rhs);
                 self.ensure_assignable(&lhs_type, &rhs.r#type, "assignment");
@@ -522,9 +551,7 @@ impl SemanticAnalyzer {
             }
             ExprKind::PreIncrement(expr) => {
                 let expr = self.analyze_expr(*expr);
-                if !matches!(expr.kind, ExprKind::Var(_)) {
-                    panic!("increment target must be a variable");
-                }
+                self.ensure_lvalue(&expr, "pre-increment target");
                 self.ensure_numeric_type(&expr.r#type, "pre-increment operand");
                 let ty = expr.r#type.clone();
                 Expr {
@@ -537,9 +564,7 @@ impl SemanticAnalyzer {
             }
             ExprKind::PreDecrement(expr) => {
                 let expr = self.analyze_expr(*expr);
-                if !matches!(expr.kind, ExprKind::Var(_)) {
-                    panic!("decrement target must be a variable");
-                }
+                self.ensure_lvalue(&expr, "pre-decrement target");
                 self.ensure_numeric_type(&expr.r#type, "pre-decrement operand");
                 let ty = expr.r#type.clone();
                 Expr {
@@ -552,9 +577,7 @@ impl SemanticAnalyzer {
             }
             ExprKind::PostIncrement(expr) => {
                 let expr = self.analyze_expr(*expr);
-                if !matches!(expr.kind, ExprKind::Var(_)) {
-                    panic!("increment target must be a variable");
-                }
+                self.ensure_lvalue(&expr, "post-increment target");
                 self.ensure_numeric_type(&expr.r#type, "post-increment operand");
                 let ty = expr.r#type.clone();
                 Expr {
@@ -567,9 +590,7 @@ impl SemanticAnalyzer {
             }
             ExprKind::PostDecrement(expr) => {
                 let expr = self.analyze_expr(*expr);
-                if !matches!(expr.kind, ExprKind::Var(_)) {
-                    panic!("decrement target must be a variable");
-                }
+                self.ensure_lvalue(&expr, "post-decrement target");
                 self.ensure_numeric_type(&expr.r#type, "post-decrement operand");
                 let ty = expr.r#type.clone();
                 Expr {
@@ -587,6 +608,13 @@ impl SemanticAnalyzer {
         match init {
             ForInit::Declaration(stmt) => ForInit::Declaration(Box::new(self.analyze_stmt(*stmt))),
             ForInit::Expr(expr) => ForInit::Expr(expr.map(|e| self.analyze_expr(e))),
+        }
+    }
+
+    fn ensure_lvalue(&self, expr: &Expr, context: &str) {
+        match &expr.kind {
+            ExprKind::Var(_) | ExprKind::Dereference(_) => {}
+            _ => panic!("{context} requires an lvalue"),
         }
     }
 
@@ -688,6 +716,35 @@ impl SemanticAnalyzer {
         }
     }
 
+    fn analyze_equality<F>(
+        &mut self,
+        lhs: Expr,
+        rhs: Expr,
+        start: usize,
+        end: usize,
+        source: String,
+        constructor: F,
+    ) -> Expr
+    where
+        F: FnOnce(Box<Expr>, Box<Expr>) -> ExprKind,
+    {
+        let lhs = self.analyze_expr(lhs);
+        let rhs = self.analyze_expr(rhs);
+        if Self::is_pointer_type(&lhs.r#type) || Self::is_pointer_type(&rhs.r#type) {
+            self.ensure_pointer_comparable(&lhs.r#type, &rhs.r#type, "equality comparison");
+        } else {
+            self.ensure_numeric_type(&lhs.r#type, "comparison operand");
+            self.ensure_numeric_type(&rhs.r#type, "comparison operand");
+        }
+        Expr {
+            kind: constructor(Box::new(lhs), Box::new(rhs)),
+            start,
+            end,
+            source,
+            r#type: Type::Int,
+        }
+    }
+
     fn analyze_comparison<F>(
         &mut self,
         lhs: Expr,
@@ -727,8 +784,8 @@ impl SemanticAnalyzer {
     {
         let lhs = self.analyze_expr(lhs);
         let rhs = self.analyze_expr(rhs);
-        self.ensure_integer_type(&lhs.r#type, "logical operand");
-        self.ensure_integer_type(&rhs.r#type, "logical operand");
+        self.ensure_condition_type(&lhs.r#type, "logical operand");
+        self.ensure_condition_type(&rhs.r#type, "logical operand");
         Expr {
             kind: constructor(Box::new(lhs), Box::new(rhs)),
             start,
@@ -763,6 +820,13 @@ impl SemanticAnalyzer {
         }
     }
 
+    fn ensure_condition_type(&self, ty: &Type, context: &str) {
+        if Self::is_integer_type(ty) || Self::is_pointer_type(ty) {
+            return;
+        }
+        panic!("{context} requires scalar type, found {:?}", ty);
+    }
+
     fn ensure_numeric_type(&self, ty: &Type, context: &str) {
         if !Self::is_numeric_type(ty) {
             panic!("{context} requires numeric type, found {:?}", ty);
@@ -778,14 +842,27 @@ impl SemanticAnalyzer {
             return;
         }
 
+        if Self::is_pointer_type(target) {
+            if Self::is_pointer_type(value) && Self::pointer_types_compatible(target, value) {
+                return;
+            }
+            if Self::is_integer_type(value) {
+                return;
+            }
+        }
+
         panic!(
-            "{context} requires compatible numeric types ({:?} <- {:?})",
+            "{context} requires compatible types ({:?} <- {:?})",
             target, value
         );
     }
 
     fn is_integer_type(ty: &Type) -> bool {
         matches!(ty, Type::Int | Type::UInt | Type::Long | Type::ULong)
+    }
+
+    fn is_pointer_type(ty: &Type) -> bool {
+        matches!(ty, Type::Pointer(_))
     }
 
     fn is_floating_type(ty: &Type) -> bool {
@@ -800,6 +877,15 @@ impl SemanticAnalyzer {
         if Self::is_numeric_type(from) && Self::is_numeric_type(to) {
             return;
         }
+        if Self::is_pointer_type(from) && Self::is_pointer_type(to) {
+            return;
+        }
+        if Self::is_pointer_type(from) && Self::is_integer_type(to) {
+            return;
+        }
+        if Self::is_integer_type(from) && Self::is_pointer_type(to) {
+            return;
+        }
         panic!("unsupported cast {:?} -> {:?}", from, to);
     }
 
@@ -811,7 +897,38 @@ impl SemanticAnalyzer {
             Type::ULong => 3,
             Type::Void => panic!("void type has no integer rank"),
             Type::Double => panic!("double type has no integer rank"),
+            Type::Pointer(_) | Type::FunType(_, _) => panic!("pointer type has no integer rank"),
         }
+    }
+
+    fn pointer_types_compatible(lhs: &Type, rhs: &Type) -> bool {
+        if lhs == rhs {
+            return true;
+        }
+
+        match (lhs, rhs) {
+            (Type::Pointer(l), Type::Pointer(r)) => {
+                matches!(l.as_ref(), Type::Void) || matches!(r.as_ref(), Type::Void)
+            }
+            _ => false,
+        }
+    }
+
+    fn ensure_pointer_comparable(&self, lhs: &Type, rhs: &Type, context: &str) {
+        if Self::is_pointer_type(lhs) && Self::is_pointer_type(rhs) {
+            if Self::pointer_types_compatible(lhs, rhs) {
+                return;
+            }
+        } else if (Self::is_pointer_type(lhs) && Self::is_integer_type(rhs))
+            || (Self::is_integer_type(lhs) && Self::is_pointer_type(rhs))
+        {
+            return;
+        }
+
+        panic!(
+            "{context} requires compatible pointer types ({:?} vs {:?})",
+            lhs, rhs
+        );
     }
 
     fn insert_symbol(&mut self, name: String, symbol: Symbol) {
