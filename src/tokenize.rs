@@ -85,14 +85,14 @@ pub enum TokenKind {
     #[token(">>")]
     RShift,
 
-    #[token("&=")]
-    AndEqual,
-
     #[token("&")]
-    BitAnd,
+    Ampersand,
 
     #[token("&&")]
-    And,
+    DoubleAmpersand,
+
+    #[token("&=")]
+    AmpersandEqual,
 
     #[token("^=")]
     XorEqual,

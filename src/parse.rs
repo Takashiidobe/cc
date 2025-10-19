@@ -818,7 +818,7 @@ impl Parser {
             | TokenKind::StarEqual
             | TokenKind::SlashEqual
             | TokenKind::PercentEqual
-            | TokenKind::AndEqual
+            | TokenKind::AmpersandEqual
             | TokenKind::OrEqual
             | TokenKind::XorEqual
             | TokenKind::LShiftEqual
@@ -882,7 +882,7 @@ impl Parser {
             TokenKind::StarEqual => ExprKind::Mul(Box::new(lhs), Box::new(rhs)),
             TokenKind::SlashEqual => ExprKind::Div(Box::new(lhs), Box::new(rhs)),
             TokenKind::PercentEqual => ExprKind::Rem(Box::new(lhs), Box::new(rhs)),
-            TokenKind::AndEqual => ExprKind::BitAnd(Box::new(lhs), Box::new(rhs)),
+            TokenKind::AmpersandEqual => ExprKind::BitAnd(Box::new(lhs), Box::new(rhs)),
             TokenKind::OrEqual => ExprKind::BitOr(Box::new(lhs), Box::new(rhs)),
             TokenKind::XorEqual => ExprKind::Xor(Box::new(lhs), Box::new(rhs)),
             TokenKind::LShiftEqual => ExprKind::LeftShift(Box::new(lhs), Box::new(rhs)),
@@ -939,7 +939,7 @@ impl Parser {
             source,
         } = self.peek()
         {
-            if !matches!(kind, TokenKind::And) {
+            if !matches!(kind, TokenKind::Ampersand) {
                 break;
             }
 
@@ -1026,7 +1026,7 @@ impl Parser {
             source,
         } = self.peek()
         {
-            if !matches!(kind, TokenKind::BitAnd) {
+            if !matches!(kind, TokenKind::Ampersand) {
                 break;
             }
 
