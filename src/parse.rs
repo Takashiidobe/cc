@@ -14,6 +14,7 @@ pub enum StorageClass {
 #[derive(Debug, Clone, PartialEq)]
 pub enum ExprKind {
     Constant(Const),
+    String(String),
     Var(String),
     FunctionCall(String, Vec<Expr>),
     Cast(Type, Box<Expr>),
@@ -138,6 +139,9 @@ pub enum ForInit {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Type {
+    Char,
+    SChar,
+    UChar,
     Int,
     Long,
     UInt,
@@ -155,6 +159,8 @@ fn is_plain_void(ty: &Type) -> bool {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Const {
+    Char(i32),
+    UChar(i32),
     Int(i64),
     Long(i64),
     UInt(u64),
@@ -261,6 +267,7 @@ struct TypeSpecifierState {
     saw_double: bool,
     saw_long: bool,
     saw_int: bool,
+    saw_char: bool,
     signedness: Option<bool>, // Some(true) for signed, Some(false) for unsigned
     is_const: bool,
 }
@@ -304,6 +311,15 @@ impl TypeSpecifierState {
                 }
                 self.saw_int = true;
             }
+            TokenKind::Char => {
+                if self.saw_void || self.saw_double || self.saw_long || self.saw_int {
+                    panic!("'char' cannot be combined with this type specifier");
+                }
+                if self.saw_char {
+                    panic!("duplicate 'char' specifier in declaration");
+                }
+                self.saw_char = true;
+            }
             TokenKind::Signed => {
                 if self.saw_double {
                     panic!("'signed' cannot be combined with 'double'");
@@ -343,6 +359,7 @@ impl TypeSpecifierState {
             || self.saw_double
             || self.saw_long
             || self.saw_int
+            || self.saw_char
             || self.signedness.is_some()
     }
 
@@ -359,10 +376,22 @@ impl TypeSpecifierState {
             return Type::Double;
         }
 
+        if self.saw_char {
+            return match self.signedness {
+                Some(true) => Type::SChar,
+                Some(false) => Type::UChar,
+                None => Type::Char,
+            };
+        }
+
         let is_unsigned = matches!(self.signedness, Some(false));
         if self.saw_long {
             if is_unsigned { Type::ULong } else { Type::Long }
-        } else if is_unsigned { Type::UInt } else { Type::Int }
+        } else if is_unsigned {
+            Type::UInt
+        } else {
+            Type::Int
+        }
     }
 }
 
@@ -422,6 +451,7 @@ impl Parser {
                 | TokenKind::Signed
                 | TokenKind::Unsigned
                 | TokenKind::Double
+                | TokenKind::Char
                 | TokenKind::Const => {
                     self.advance();
                     state.add(&kind);
@@ -529,11 +559,11 @@ impl Parser {
 
         if self.peek().kind == TokenKind::Void
             && self.pos + 1 < self.tokens.len()
-                && self.tokens[self.pos + 1].kind == TokenKind::RParen
-            {
-                self.advance();
-                return Vec::new();
-            }
+            && self.tokens[self.pos + 1].kind == TokenKind::RParen
+        {
+            self.advance();
+            return Vec::new();
+        }
 
         let mut params = Vec::new();
 
@@ -1663,6 +1693,39 @@ impl Parser {
                     r#type: Type::Double,
                 }
             }
+            TokenKind::CharConstant(value) => {
+                self.advance();
+                Expr {
+                    kind: ExprKind::Constant(Const::Char(value)),
+                    start,
+                    end,
+                    source,
+                    r#type: Type::Int,
+                }
+            }
+            TokenKind::String(value) => {
+                self.advance();
+                let mut combined_value = value;
+                let mut final_end = end;
+                while self.pos < self.tokens.len() {
+                    let next_token = self.peek();
+                    if let TokenKind::String(next_value) = next_token.kind.clone() {
+                        combined_value.push_str(&next_value);
+                        final_end = next_token.end;
+                        self.advance();
+                    } else {
+                        break;
+                    }
+                }
+                let combined_source = self.source_slice(start, final_end);
+                Expr {
+                    kind: ExprKind::String(combined_value),
+                    start,
+                    end: final_end,
+                    source: combined_source,
+                    r#type: Type::Pointer(Box::new(Type::Char)),
+                }
+            }
             TokenKind::Identifier(name) => {
                 self.advance();
                 Expr {
@@ -1701,6 +1764,7 @@ impl Parser {
                 | TokenKind::Signed
                 | TokenKind::Unsigned
                 | TokenKind::Double
+                | TokenKind::Char
                 | TokenKind::Const => {
                     state.add(kind);
                     consumed_any = true;

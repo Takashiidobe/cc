@@ -16,6 +16,7 @@ pub struct Program {
 pub enum TopLevel {
     Function(Function),
     StaticVariable(StaticVariable),
+    StaticConstant(StaticConstant),
 }
 
 #[derive(Debug, Clone)]
@@ -37,9 +38,24 @@ pub struct StaticVariable {
 }
 
 #[derive(Debug, Clone)]
-pub struct StaticInit {
-    pub offset: i64,
-    pub value: Const,
+pub struct StaticConstant {
+    pub name: String,
+    pub ty: Type,
+    pub init: StaticInit,
+}
+
+#[derive(Debug, Clone)]
+pub enum StaticInit {
+    Scalar { offset: i64, value: Const },
+    Bytes {
+        offset: i64,
+        value: Vec<u8>,
+        null_terminated: bool,
+    },
+    Label {
+        offset: i64,
+        symbol: String,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -162,6 +178,8 @@ pub struct TackyGen {
     global_types: BTreeMap<String, Type>,
     current_return_type: Option<Type>,
     function_signatures: BTreeMap<String, (Vec<Type>, Type)>,
+    string_literals: Vec<StaticConstant>,
+    string_counter: usize,
 }
 
 struct LoopContext {
@@ -226,6 +244,8 @@ impl TackyGen {
             global_types,
             current_return_type: None,
             function_signatures,
+            string_literals: Vec::new(),
+            string_counter: 0,
         }
     }
 
@@ -246,6 +266,10 @@ impl TackyGen {
                     }
                 }
             }
+        }
+
+        for constant in self.string_literals.drain(..) {
+            items.push(TopLevel::StaticConstant(constant));
         }
 
         Program {
@@ -334,20 +358,48 @@ impl TackyGen {
 
         let mut init_list = Vec::new();
         if let Some(expr) = init {
-            let const_value = match &expr.kind {
-                ExprKind::Constant(c) => Self::convert_constant(c.clone(), &expr.r#type, &r#type),
+            match (&r#type, &expr.kind) {
+                (Type::Array(elem, size), ExprKind::String(value))
+                    if Self::is_char_type(elem.as_ref()) =>
+                {
+                    let (bytes, null_terminated) = Self::char_array_bytes(value, *size);
+                    init_list.push(StaticInit::Bytes {
+                        offset: 0,
+                        value: bytes,
+                        null_terminated,
+                    });
+                }
+                (Type::Array(_, _), _) => {
+                    panic!("unsupported array initializer for static variable '{name}'");
+                }
+                (_, ExprKind::String(value)) => {
+                    let symbol = self.intern_string_literal(value);
+                    init_list.push(StaticInit::Label {
+                        offset: 0,
+                        symbol,
+                    });
+                }
+                (_, ExprKind::Constant(c)) => {
+                    let const_value =
+                        Self::convert_constant(c.clone(), &expr.r#type, &r#type);
+                    init_list.push(StaticInit::Scalar {
+                        offset: 0,
+                        value: const_value,
+                    });
+                }
                 _ => {
                     if r#type == Type::Double {
                         panic!("non-constant double initializer");
                     }
                     let value = Self::eval_const_expr(&expr);
-                    Self::convert_constant(Const::Long(value), &Type::Long, &r#type)
+                    let const_value =
+                        Self::convert_constant(Const::Long(value), &Type::Long, &r#type);
+                    init_list.push(StaticInit::Scalar {
+                        offset: 0,
+                        value: const_value,
+                    });
                 }
-            };
-            init_list.push(StaticInit {
-                offset: 0,
-                value: const_value,
-            });
+            }
         }
 
         let global = storage_class != Some(StorageClass::Static);
@@ -362,6 +414,8 @@ impl TackyGen {
 
     fn eval_const_expr(expr: &Expr) -> i64 {
         match &expr.kind {
+            ExprKind::Constant(Const::Char(n)) => *n as i64,
+            ExprKind::Constant(Const::UChar(n)) => *n as i64,
             ExprKind::Constant(Const::Int(n)) => *n,
             ExprKind::Constant(Const::Long(n)) => *n,
             ExprKind::Constant(Const::UInt(n)) => (*n as u32) as i64,
@@ -522,6 +576,8 @@ impl TackyGen {
 
     fn type_of_value(&self, value: &Value) -> Type {
         match value {
+            Value::Constant(Const::Char(_)) => Type::Int,
+            Value::Constant(Const::UChar(_)) => Type::UInt,
             Value::Constant(Const::Int(_)) => Type::Int,
             Value::Constant(Const::Long(_)) => Type::Long,
             Value::Constant(Const::UInt(_)) => Type::UInt,
@@ -554,6 +610,7 @@ impl TackyGen {
 
     fn bit_width(ty: &Type) -> u32 {
         match ty {
+            Type::Char | Type::SChar | Type::UChar => 8,
             Type::Int | Type::UInt => 32,
             Type::Long | Type::ULong => 64,
             Type::Double => 64,
@@ -565,11 +622,18 @@ impl TackyGen {
     }
 
     fn is_unsigned(ty: &Type) -> bool {
-        matches!(ty, Type::UInt | Type::ULong)
+        matches!(ty, Type::UChar | Type::UInt | Type::ULong)
     }
 
     fn is_integer_type(ty: &Type) -> bool {
-        matches!(ty, Type::Int | Type::UInt | Type::Long | Type::ULong)
+        matches!(
+            ty,
+            Type::Char | Type::SChar | Type::UChar | Type::Int | Type::UInt | Type::Long | Type::ULong
+        )
+    }
+
+    fn is_char_type(ty: &Type) -> bool {
+        matches!(ty, Type::Char | Type::SChar | Type::UChar)
     }
 
     fn is_pointer_type(ty: &Type) -> bool {
@@ -586,10 +650,12 @@ impl TackyGen {
 
     fn type_rank(ty: &Type) -> usize {
         match ty {
-            Type::Int => 0,
-            Type::UInt => 1,
-            Type::Long => 2,
-            Type::ULong => 3,
+            Type::Char | Type::SChar => 0,
+            Type::UChar => 1,
+            Type::Int => 2,
+            Type::UInt => 3,
+            Type::Long => 4,
+            Type::ULong => 5,
 
             Type::Void => panic!("void type has no rank"),
             Type::Double => panic!("double type has no integer rank"),
@@ -632,6 +698,8 @@ impl TackyGen {
         if matches!(to_type, Type::Double) {
             let value = match (constant, from_type) {
                 (Const::Double(v), _) => v,
+                (Const::Char(n), _) => n as f64,
+                (Const::UChar(n), _) => n as f64,
                 (Const::Int(n), _) => n as f64,
                 (Const::Long(n), _) => n as f64,
                 (Const::UInt(n), _) => n as f64,
@@ -646,6 +714,8 @@ impl TackyGen {
                 _ => panic!("mismatched constant for double conversion"),
             };
             return match to_type {
+                Type::Char | Type::SChar => Const::Char(value as i32),
+                Type::UChar => Const::UChar(value as i32),
                 Type::Int => Const::Int(value as i64),
                 Type::Long => Const::Long(value as i64),
                 Type::UInt => Const::UInt(value as u64),
@@ -663,6 +733,8 @@ impl TackyGen {
         let from_unsigned = Self::is_unsigned(from_type);
 
         let mut raw = match constant {
+            Const::Char(n) => (n as i8 as i32 as u32) as u128,
+            Const::UChar(n) => (n as u8 as u32) as u128,
             Const::Int(n) => (n as i32 as u32) as u128,
             Const::UInt(n) => (n as u32) as u128,
             Const::Long(n) => (n as u64) as u128,
@@ -683,6 +755,14 @@ impl TackyGen {
         raw &= Self::mask(to_bits);
 
         match to_type {
+            Type::Char | Type::SChar => {
+                let value = (raw as u8) as i8 as i32;
+                Const::Char(value)
+            }
+            Type::UChar => {
+                let value = (raw as u8) as i32;
+                Const::UChar(value)
+            }
             Type::Int => {
                 let value = (raw as u32) as i32 as i64;
                 Const::Int(value)
@@ -702,6 +782,54 @@ impl TackyGen {
             Type::FunType(_, _) => panic!("cannot convert integer constant to function type"),
             Type::Array(_, _) => panic!("cannot convert integer constant to array type"),
         }
+    }
+
+    fn char_array_bytes(value: &str, size: usize) -> (Vec<u8>, bool) {
+        let literal = value.as_bytes();
+        if literal.len() > size {
+            panic!(
+                "string literal initializer \"{}\" does not fit in array of size {}",
+                value, size
+            );
+        }
+        let mut bytes = value.as_bytes().to_vec();
+        bytes.push(0);
+
+        let mut data = Vec::with_capacity(size);
+        for (idx, byte) in bytes.iter().enumerate() {
+            if idx >= size {
+                break;
+            }
+            data.push(*byte);
+        }
+
+        while data.len() < size {
+            data.push(0);
+        }
+
+        let null_terminated = data.last().copied() == Some(0);
+        (data, null_terminated)
+    }
+
+    fn intern_string_literal(&mut self, value: &str) -> String {
+        let name = format!(".LC{}", self.string_counter);
+        self.string_counter += 1;
+
+        let mut bytes = value.as_bytes().to_vec();
+        bytes.push(0);
+        let ty = Type::Array(Box::new(Type::Char), bytes.len());
+        let init = StaticInit::Bytes {
+            offset: 0,
+            value: bytes,
+            null_terminated: true,
+        };
+        self.string_literals.push(StaticConstant {
+            name: name.clone(),
+            ty: ty.clone(),
+            init,
+        });
+        self.global_types.insert(name.clone(), ty);
+        name
     }
 
     fn gen_stmt(&mut self, stmt: &Stmt, instructions: &mut Vec<Instruction>) {
@@ -902,6 +1030,17 @@ impl TackyGen {
         let result_type = expr.r#type.clone();
         match &expr.kind {
             ExprKind::Constant(c) => Value::Constant(c.clone()),
+            ExprKind::String(value) => {
+                let symbol = self.intern_string_literal(value);
+                let tmp = self.fresh_tmp();
+                self.record_temp(&tmp, &result_type);
+                let dst = Value::Var(tmp.clone());
+                instructions.push(Instruction::GetAddress {
+                    src: Value::Global(symbol),
+                    dst: dst.clone(),
+                });
+                dst
+            }
             ExprKind::Var(name) => {
                 let value = self.value_for_variable(name);
                 let storage_ty = self.type_of_value(&value);
@@ -1414,6 +1553,7 @@ impl TackyGen {
 
     fn size_of_type(ty: &Type) -> i64 {
         match ty {
+            Type::Char | Type::SChar | Type::UChar => 1,
             Type::Int | Type::UInt => 4,
             Type::Long | Type::ULong => 8,
             Type::Double => 8,
@@ -1603,6 +1743,9 @@ impl TackyGen {
                     src2: Value::Constant(Const::ULong(1)),
                     dst: updated_tmp.clone(),
                 });
+            }
+            Type::Char | Type::SChar | Type::UChar => {
+                panic!("increment/decrement for char types not yet supported");
             }
             Type::Double => {
                 instructions.push(Instruction::Binary {

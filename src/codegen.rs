@@ -1,11 +1,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::convert::TryFrom;
+use std::fmt::Write as FmtWrite;
 use std::io::{Result, Write};
 
 use crate::parse::{Const, Type};
 use crate::tacky::{
-    BinaryOp, Function, Instruction, Program as TackyProgram, StaticVariable, TopLevel, UnaryOp,
-    Value,
+    BinaryOp, Function, Instruction, Program as TackyProgram, StaticConstant, StaticInit,
+    StaticVariable, TopLevel, UnaryOp, Value,
 };
 
 pub struct Codegen<W: Write> {
@@ -50,6 +51,7 @@ impl<W: Write> Codegen<W> {
         for item in &program.items {
             match item {
                 TopLevel::StaticVariable(var) => self.emit_static_variable(var)?,
+                TopLevel::StaticConstant(constant) => self.emit_static_constant(constant)?,
                 TopLevel::Function(function) => self.emit_function(function)?,
             }
         }
@@ -57,20 +59,17 @@ impl<W: Write> Codegen<W> {
     }
 
     fn emit_static_variable(&mut self, var: &StaticVariable) -> Result<()> {
-        if !var.init.is_empty() && (var.init.len() != 1 || var.init[0].offset != 0) {
+        if var.init.len() > 1 {
             panic!("compound static initializers are not supported yet");
         }
 
-        let init_value_ref = var.init.first().map(|init| &init.value);
-        let init_const = init_value_ref.cloned();
+        let init_entry = var.init.first();
 
-        let is_zero_init = match init_value_ref {
+        let is_zero_init = match init_entry {
             None => true,
-            Some(Const::Int(v)) => *v == 0,
-            Some(Const::UInt(v)) => *v == 0,
-            Some(Const::Long(v)) => *v == 0,
-            Some(Const::ULong(v)) => *v == 0,
-            Some(Const::Double(v)) => *v == 0.0,
+            Some(StaticInit::Scalar { value, .. }) => Self::const_is_zero(value),
+            Some(StaticInit::Bytes { value, .. }) => value.iter().all(|&b| b == 0),
+            Some(StaticInit::Label { .. }) => false,
         };
 
         if is_zero_init {
@@ -85,48 +84,151 @@ impl<W: Write> Codegen<W> {
         writeln!(self.buf, ".align {}", align)?;
         writeln!(self.buf, "{}:", var.name)?;
         let size = Self::type_size(&var.ty);
-        if is_zero_init {
-            writeln!(self.buf, "  .zero {}", size)?
-        } else {
-            match (&var.ty, init_const.as_ref()) {
-                (Type::Int, Some(Const::Int(value))) => {
-                    writeln!(self.buf, "  .long {}", *value as i32)?;
-                }
-                (Type::UInt, Some(Const::UInt(value))) => {
-                    let truncated = value & 0xffff_ffff;
-                    writeln!(self.buf, "  .long {}", truncated)?;
-                }
-                (Type::Long, Some(Const::Long(value))) => {
-                    writeln!(self.buf, "  .quad {}", value)?;
-                }
-                (Type::ULong, Some(Const::ULong(value))) => {
-                    writeln!(self.buf, "  .quad {}", value)?;
-                }
-                (Type::Pointer(_), Some(Const::Long(value))) => {
-                    writeln!(self.buf, "  .quad {}", value)?;
-                }
-                (Type::Pointer(_), Some(Const::ULong(value))) => {
-                    writeln!(self.buf, "  .quad {}", value)?;
-                }
-                (Type::Double, Some(Const::Double(value))) => {
-                    let bits = value.to_bits();
-                    writeln!(self.buf, "  .quad {}", bits)?;
-                }
-                (Type::Int, None)
-                | (Type::UInt, None)
-                | (Type::Long, None)
-                | (Type::ULong, None)
-                | (Type::Pointer(_), None)
-                | (Type::Double, None) => {
-                    writeln!(self.buf, "  .zero {}", Self::type_size(&var.ty))?
-                }
-                _ => panic!(
-                    "static initializer type mismatch: {:?} with {:?}",
-                    var.ty, init_const
-                ),
-            }
+        match init_entry {
+            None => writeln!(self.buf, "  .zero {}", size)?,
+            Some(init) => self.emit_static_init_for_type(&var.ty, init)?,
         }
         Ok(())
+    }
+
+    fn emit_scalar_static(&mut self, ty: &Type, value: &Const) -> Result<()> {
+        match (ty, value) {
+            (Type::Int, Const::Int(v)) => {
+                writeln!(self.buf, "  .long {}", *v as i32)?;
+            }
+            (Type::UInt, Const::UInt(v)) => {
+                let truncated = v & 0xffff_ffff;
+                writeln!(self.buf, "  .long {}", truncated)?;
+            }
+            (Type::Long, Const::Long(v)) => {
+                writeln!(self.buf, "  .quad {}", v)?;
+            }
+            (Type::ULong, Const::ULong(v)) => {
+                writeln!(self.buf, "  .quad {}", v)?;
+            }
+            (Type::Pointer(_), Const::Long(v)) => {
+                writeln!(self.buf, "  .quad {}", v)?;
+            }
+            (Type::Pointer(_), Const::ULong(v)) => {
+                writeln!(self.buf, "  .quad {}", v)?;
+            }
+            (Type::Double, Const::Double(v)) => {
+                writeln!(self.buf, "  .quad {}", v.to_bits())?;
+            }
+            (Type::Char | Type::SChar, Const::Char(v)) => {
+                writeln!(self.buf, "  .byte {}", *v as i32 & 0xff)?;
+            }
+            (Type::UChar, Const::UChar(v)) => {
+                writeln!(self.buf, "  .byte {}", *v as i32 & 0xff)?;
+            }
+            _ => panic!("unsupported scalar static initializer {:?} <- {:?}", ty, value),
+        }
+        Ok(())
+    }
+
+    fn emit_static_init_for_type(&mut self, ty: &Type, init: &StaticInit) -> Result<()> {
+        match init {
+            StaticInit::Scalar { offset, value } => {
+                if *offset != 0 {
+                    writeln!(self.buf, "  .zero {}", offset)?;
+                }
+                self.emit_scalar_static(ty, value)
+            }
+            StaticInit::Bytes {
+                offset,
+                value,
+                null_terminated,
+            } => {
+                if *offset != 0 {
+                    writeln!(self.buf, "  .zero {}", offset)?;
+                }
+                if !matches!(ty, Type::Array(_, _)) {
+                    panic!(
+                        "byte initializer is only supported for array types (found {:?})",
+                        ty
+                    );
+                }
+                self.emit_bytes_directive(value, *null_terminated)
+            }
+            StaticInit::Label { offset, symbol } => {
+                if *offset != 0 {
+                    writeln!(self.buf, "  .zero {}", offset)?;
+                }
+                if !matches!(ty, Type::Pointer(_)) {
+                    panic!(
+                        "label initializer requires pointer type (found {:?})",
+                        ty
+                    );
+                }
+                writeln!(self.buf, "  .quad {}", symbol)
+            }
+        }
+    }
+
+    fn const_is_zero(value: &Const) -> bool {
+        match value {
+            Const::Char(v) => *v == 0,
+            Const::Int(v) => *v == 0,
+            Const::Long(v) => *v == 0,
+            Const::UChar(v) => *v == 0,
+            Const::UInt(v) => *v == 0,
+            Const::ULong(v) => *v == 0,
+            Const::Double(v) => *v == 0.0,
+        }
+    }
+
+    fn emit_bytes_directive(&mut self, bytes: &[u8], null_terminated: bool) -> Result<()> {
+        if null_terminated && bytes.is_empty() {
+            return writeln!(self.buf, "  .asciz \"\"");
+        }
+        if !null_terminated && bytes.is_empty() {
+            return writeln!(self.buf, "  .ascii \"\"");
+        }
+
+        if null_terminated && bytes.last() != Some(&0) {
+            panic!("null-terminated initializer missing trailing NUL byte");
+        }
+
+        let slice = if null_terminated {
+            &bytes[..bytes.len().saturating_sub(1)]
+        } else {
+            bytes
+        };
+
+        let escaped = Self::escape_bytes(slice);
+        let directive = if null_terminated { ".asciz" } else { ".ascii" };
+        writeln!(self.buf, "  {} \"{}\"", directive, escaped)
+    }
+
+    fn escape_bytes(bytes: &[u8]) -> String {
+        let mut escaped = String::new();
+        for &b in bytes {
+            match b {
+                b'\n' => escaped.push_str("\\n"),
+                b'\r' => escaped.push_str("\\r"),
+                b'\t' => escaped.push_str("\\t"),
+                b'\0' => escaped.push_str("\\0"),
+                b'\\' => escaped.push_str("\\\\"),
+                b'"' => escaped.push_str("\\\""),
+                b'\x07' => escaped.push_str("\\a"),
+                b'\x08' => escaped.push_str("\\b"),
+                b'\x0b' => escaped.push_str("\\v"),
+                b'\x0c' => escaped.push_str("\\f"),
+                0x20..=0x7e => escaped.push(char::from(b)),
+                _ => {
+                    let _ = write!(escaped, "\\x{:02x}", b);
+                }
+            }
+        }
+        escaped
+    }
+
+    fn emit_static_constant(&mut self, constant: &StaticConstant) -> Result<()> {
+        writeln!(self.buf, ".data")?;
+        let align = Self::type_align(&constant.ty);
+        writeln!(self.buf, ".align {}", align)?;
+        writeln!(self.buf, "{}:", constant.name)?;
+        self.emit_static_init_for_type(&constant.ty, &constant.init)
     }
 
     fn emit_function(&mut self, function: &Function) -> Result<()> {
@@ -146,6 +248,9 @@ impl<W: Write> Codegen<W> {
             self.emit_instruction(instr)?;
         }
         match function.return_type {
+            Type::Char | Type::SChar | Type::UChar => {
+                panic!("char returns not yet supported")
+            }
             Type::Int | Type::UInt => writeln!(self.buf, "  movl $0, %eax")?,
             Type::Long | Type::ULong | Type::Pointer(_) => writeln!(self.buf, "  movq $0, %rax")?,
             Type::Double => writeln!(self.buf, "  xorpd %xmm0, %xmm0")?,
@@ -591,6 +696,9 @@ impl<W: Write> Codegen<W> {
                 self.load_value_into_reg(src1, Reg::AX)?;
                 self.load_value_into_reg(src2, Reg::R10)?;
                 match ty {
+                    Type::Char | Type::SChar | Type::UChar => {
+                        panic!("division for char types not yet supported");
+                    }
                     Type::Int => {
                         writeln!(self.buf, "  cltd")?;
                         writeln!(
@@ -813,6 +921,9 @@ impl<W: Write> Codegen<W> {
             Type::Double => {
                 self.load_value_into_xmm(src, 0)?;
                 writeln!(self.buf, "  movsd {}, {}", Self::xmm_name(0), addr)?;
+            }
+            Type::Char | Type::SChar | Type::UChar => {
+                panic!("CopyToOffset for char types not yet supported");
             }
             Type::Int | Type::UInt => {
                 self.load_value_into_reg(src, Reg::R11)?;
@@ -1081,6 +1192,22 @@ impl<W: Write> Codegen<W> {
             panic!("attempted to load double into general-purpose register");
         }
         match value {
+            Value::Constant(Const::Char(n)) => {
+                writeln!(
+                    self.buf,
+                    "  movb ${}, {}",
+                    *n,
+                    Codegen::<W>::reg_name_for_type(reg, &Type::Char)
+                )
+            }
+            Value::Constant(Const::UChar(n)) => {
+                writeln!(
+                    self.buf,
+                    "  movb ${}, {}",
+                    *n,
+                    Codegen::<W>::reg_name_for_type(reg, &Type::UChar)
+                )
+            }
             Value::Constant(Const::Int(n)) => {
                 writeln!(
                     self.buf,
@@ -1217,6 +1344,7 @@ impl<W: Write> Codegen<W> {
 
     fn type_size(ty: &Type) -> i64 {
         match ty {
+            Type::Char | Type::SChar | Type::UChar => 1,
             Type::Int | Type::UInt => 4,
             Type::Long | Type::ULong | Type::Double => 8,
             Type::Void => 0,
@@ -1231,6 +1359,7 @@ impl<W: Write> Codegen<W> {
 
     fn type_align(ty: &Type) -> i64 {
         match ty {
+            Type::Char | Type::SChar | Type::UChar => 1,
             Type::Long | Type::ULong => 8,
             Type::Int | Type::UInt => 4,
             Type::Double => 8,
@@ -1243,6 +1372,7 @@ impl<W: Write> Codegen<W> {
 
     fn mov_instr(&self, ty: &Type) -> &'static str {
         match ty {
+            Type::Char | Type::SChar | Type::UChar => "movb",
             Type::Int | Type::UInt => "movl",
             Type::Long | Type::ULong => "movq",
             Type::Void => "movq",
@@ -1255,6 +1385,7 @@ impl<W: Write> Codegen<W> {
 
     fn reg_name_for_type(reg: Reg, ty: &Type) -> &'static str {
         match ty {
+            Type::Char | Type::SChar | Type::UChar => Self::reg_name8(reg),
             Type::Int | Type::UInt => Self::reg_name32(reg),
             Type::Long | Type::ULong | Type::Void | Type::Pointer(_) => Self::reg_name(reg),
             Type::Double => panic!("general-purpose register requested for double"),
@@ -1264,7 +1395,7 @@ impl<W: Write> Codegen<W> {
     }
 
     fn is_unsigned_type(ty: &Type) -> bool {
-        matches!(ty, Type::UInt | Type::ULong)
+        matches!(ty, Type::UChar | Type::UInt | Type::ULong)
     }
 
     fn value_type(&self, value: &Value) -> Type {
@@ -1274,6 +1405,8 @@ impl<W: Write> Codegen<W> {
 
     fn value_type_optional(&self, value: &Value) -> Option<Type> {
         match value {
+            Value::Constant(Const::Char(_)) => Some(Type::Char),
+            Value::Constant(Const::UChar(_)) => Some(Type::UChar),
             Value::Constant(Const::Int(_)) => Some(Type::Int),
             Value::Constant(Const::Long(_)) => Some(Type::Long),
             Value::Constant(Const::UInt(_)) => Some(Type::UInt),

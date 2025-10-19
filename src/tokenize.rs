@@ -151,6 +151,9 @@ pub enum TokenKind {
     #[token("signed")]
     Signed,
 
+    #[token("char")]
+    Char,
+
     #[token("const")]
     Const,
 
@@ -222,10 +225,13 @@ pub enum TokenKind {
     )]
     Float(f64),
 
+    #[regex(r#"'([^'\\\n]|\\['\"?\\abfnrtv])'"#, |lex| parse_char_literal(lex.slice()))]
+    CharConstant(i32),
+
     #[regex(r#"[a-zA-Z_]\w*"#, |lex| lex.slice().to_owned(), priority = 2)]
     Identifier(String),
 
-    #[regex(r#""\w*""#, |lex| lex.slice().to_owned())]
+    #[regex(r#""([^"\\\n]|\\['"\\?abfnrtv])*""#, |lex| parse_string_literal(lex.slice()))]
     String(String),
 
     #[regex(r#"//.*"#, |lex| lex.slice().to_owned(), priority = 4)]
@@ -266,4 +272,58 @@ pub fn tokenize(source: &str) -> anyhow::Result<Vec<Token>> {
     }
 
     Ok(tokens)
+}
+
+fn parse_char_literal(literal: &str) -> i32 {
+    let mut chars = literal.chars();
+    debug_assert_eq!(chars.next(), Some('\''));
+    let value = match chars.next() {
+        Some('\\') => chars
+            .next()
+            .map(parse_escape_sequence)
+            .unwrap_or_else(|| panic!("invalid character constant: {}", literal)),
+        Some(c) => c,
+        None => panic!("invalid character constant: {}", literal),
+    };
+    match chars.next() {
+        Some('\'') => {}
+        _ => panic!("unterminated character constant: {}", literal),
+    }
+    value as i32
+}
+
+fn parse_string_literal(literal: &str) -> String {
+    let inner = &literal[1..literal.len() - 1];
+    let mut result = String::with_capacity(inner.len());
+    let mut chars = inner.chars();
+
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            result.push(c);
+            continue;
+        }
+        let escape = chars
+            .next()
+            .unwrap_or_else(|| panic!("invalid escape sequence in string literal: {}", literal));
+        result.push(parse_escape_sequence(escape));
+    }
+
+    result
+}
+
+fn parse_escape_sequence(ch: char) -> char {
+    match ch {
+        '\'' => '\'',
+        '"' => '"',
+        '?' => '?',
+        '\\' => '\\',
+        'a' => '\x07',
+        'b' => '\x08',
+        'f' => '\x0c',
+        'n' => '\n',
+        'r' => '\r',
+        't' => '\t',
+        'v' => '\x0b',
+        _ => panic!("unsupported escape sequence: \\{}", ch),
+    }
 }

@@ -166,7 +166,41 @@ impl SemanticAnalyzer {
             panic!("variable '{}' declared with void type", decl.name);
         }
 
-        let init = decl.init.take().map(|expr| self.analyze_expr(expr));
+        let init = decl.init.take().map(|expr| {
+            let analyzed = self.analyze_expr(expr);
+            match (&decl.r#type, &analyzed.kind) {
+                (Type::Array(elem, _), ExprKind::String(_))
+                    if Self::is_char_type(elem.as_ref()) =>
+                {
+                    // handled during IR generation
+                }
+                (Type::Array(_, _), _) => {
+                    panic!(
+                        "array variable '{}' requires a string literal initializer",
+                        decl.name
+                    );
+                }
+                (_, ExprKind::String(_)) => {
+                    if !matches!(
+                        &decl.r#type,
+                        Type::Pointer(inner) if Self::is_char_type(inner.as_ref())
+                    ) {
+                        panic!(
+                            "string literal cannot initialize type {:?}",
+                            decl.r#type
+                        );
+                    }
+                }
+                _ => {
+                    self.ensure_assignable(
+                        &decl.r#type,
+                        &analyzed.r#type,
+                        "variable initialization",
+                    );
+                }
+            }
+            analyzed
+        });
         decl.init = init;
 
         decl
@@ -179,7 +213,37 @@ impl SemanticAnalyzer {
 
         let init = decl.init.take().map(|expr| {
             let analyzed = self.analyze_expr(expr);
-            self.ensure_assignable(&decl.r#type, &analyzed.r#type, "variable initialization");
+            match (&decl.r#type, &analyzed.kind) {
+                (Type::Array(elem, _), ExprKind::String(_))
+                    if Self::is_char_type(elem.as_ref()) =>
+                {
+                    // handled later during IR lowering
+                }
+                (Type::Array(_, _), _) => {
+                    panic!(
+                        "array variable '{}' requires a string literal initializer",
+                        decl.name
+                    );
+                }
+                (_, ExprKind::String(_)) => {
+                    if !matches!(
+                        &decl.r#type,
+                        Type::Pointer(inner) if Self::is_char_type(inner.as_ref())
+                    ) {
+                        panic!(
+                            "string literal cannot initialize type {:?}",
+                            decl.r#type
+                        );
+                    }
+                }
+                _ => {
+                    self.ensure_assignable(
+                        &decl.r#type,
+                        &analyzed.r#type,
+                        "variable initialization",
+                    );
+                }
+            }
             analyzed
         });
         decl.init = init;
@@ -340,6 +404,8 @@ impl SemanticAnalyzer {
         let result = match kind {
             ExprKind::Constant(c) => {
                 let ty = match &c {
+                    Const::Char(_) => Type::Int,
+                    Const::UChar(_) => Type::UInt,
                     Const::Int(_) => Type::Int,
                     Const::Long(_) => Type::Long,
                     Const::UInt(_) => Type::UInt,
@@ -354,6 +420,13 @@ impl SemanticAnalyzer {
                     r#type: ty,
                 }
             }
+            ExprKind::String(value) => Expr {
+                kind: ExprKind::String(value),
+                start,
+                end,
+                source,
+                r#type: Type::Pointer(Box::new(Type::Char)),
+            },
             ExprKind::Var(name) => {
                 let symbol = self
                     .lookup_symbol(&name)
@@ -1000,7 +1073,10 @@ impl SemanticAnalyzer {
     }
 
     fn is_integer_type(ty: &Type) -> bool {
-        matches!(ty, Type::Int | Type::UInt | Type::Long | Type::ULong)
+        matches!(
+            ty,
+            Type::Char | Type::SChar | Type::UChar | Type::Int | Type::UInt | Type::Long | Type::ULong
+        )
     }
 
     fn is_pointer_type(ty: &Type) -> bool {
@@ -1013,6 +1089,10 @@ impl SemanticAnalyzer {
 
     fn is_numeric_type(ty: &Type) -> bool {
         Self::is_integer_type(ty) || Self::is_floating_type(ty)
+    }
+
+    fn is_char_type(ty: &Type) -> bool {
+        matches!(ty, Type::Char | Type::SChar | Type::UChar)
     }
 
     fn ensure_castable(&self, from: &Type, to: &Type) {
@@ -1040,10 +1120,12 @@ impl SemanticAnalyzer {
 
     fn type_rank(ty: &Type) -> usize {
         match ty {
-            Type::Int => 0,
-            Type::UInt => 1,
-            Type::Long => 2,
-            Type::ULong => 3,
+            Type::Char | Type::SChar => 0,
+            Type::UChar => 1,
+            Type::Int => 2,
+            Type::UInt => 3,
+            Type::Long => 4,
+            Type::ULong => 5,
             Type::Void => panic!("void type has no integer rank"),
             Type::Double => panic!("double type has no integer rank"),
             Type::Pointer(_) | Type::FunType(_, _) => panic!("pointer type has no integer rank"),
