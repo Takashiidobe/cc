@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::convert::TryFrom;
 
 use crate::parse::{
     Const, DeclKind, Expr, ExprKind, ForInit, FunctionDecl, ParameterDecl, Program as AstProgram,
@@ -7,9 +8,14 @@ use crate::parse::{
 
 #[derive(Debug, Clone)]
 pub struct Program {
-    pub functions: Vec<Function>,
-    pub statics: Vec<StaticVariable>,
+    pub items: Vec<TopLevel>,
     pub global_types: BTreeMap<String, Type>,
+}
+
+#[derive(Debug, Clone)]
+pub enum TopLevel {
+    Function(Function),
+    StaticVariable(StaticVariable),
 }
 
 #[derive(Debug, Clone)]
@@ -27,7 +33,13 @@ pub struct StaticVariable {
     pub name: String,
     pub global: bool,
     pub ty: Type,
-    pub init: Option<Const>,
+    pub init: Vec<StaticInit>,
+}
+
+#[derive(Debug, Clone)]
+pub struct StaticInit {
+    pub offset: i64,
+    pub value: Const,
 }
 
 #[derive(Debug, Clone)]
@@ -99,6 +111,17 @@ pub enum Instruction {
     Store {
         src: Value,
         dst_ptr: Value,
+    },
+    AddPtr {
+        ptr: Value,
+        index: Value,
+        scale: i64,
+        dst: Value,
+    },
+    CopyToOffset {
+        src: Value,
+        dst: String,
+        offset: i64,
     },
 }
 
@@ -207,28 +230,26 @@ impl TackyGen {
     }
 
     pub fn codegen(mut self) -> Program {
-        let mut functions = Vec::new();
-        let mut statics = Vec::new();
+        let mut items = Vec::new();
 
         let decls = std::mem::take(&mut self.program.0);
         for decl in decls {
             match decl.kind {
                 DeclKind::Function(func) => {
                     if let Some(function) = self.gen_function_decl(func) {
-                        functions.push(function);
+                        items.push(TopLevel::Function(function));
                     }
                 }
                 DeclKind::Variable(var) => {
                     if let Some(static_var) = self.gen_static_variable(var) {
-                        statics.push(static_var);
+                        items.push(TopLevel::StaticVariable(static_var));
                     }
                 }
             }
         }
 
         Program {
-            functions,
-            statics,
+            items,
             global_types: self.global_types.clone(),
         }
     }
@@ -311,23 +332,31 @@ impl TackyGen {
             return None;
         }
 
-        let init_value = init.map(|expr| match &expr.kind {
-            ExprKind::Constant(c) => Self::convert_constant(c.clone(), &expr.r#type, &r#type),
-            _ => {
-                if r#type == Type::Double {
-                    panic!("non-constant double initializer");
+        let mut init_list = Vec::new();
+        if let Some(expr) = init {
+            let const_value = match &expr.kind {
+                ExprKind::Constant(c) => Self::convert_constant(c.clone(), &expr.r#type, &r#type),
+                _ => {
+                    if r#type == Type::Double {
+                        panic!("non-constant double initializer");
+                    }
+                    let value = Self::eval_const_expr(&expr);
+                    Self::convert_constant(Const::Long(value), &Type::Long, &r#type)
                 }
-                let value = Self::eval_const_expr(&expr);
-                Self::convert_constant(Const::Long(value), &Type::Long, &r#type)
-            }
-        });
+            };
+            init_list.push(StaticInit {
+                offset: 0,
+                value: const_value,
+            });
+        }
+
         let global = storage_class != Some(StorageClass::Static);
 
         Some(StaticVariable {
             name,
             global,
             ty: r#type,
-            init: init_value,
+            init: init_list,
         })
     }
 
@@ -473,17 +502,10 @@ impl TackyGen {
                 from: from_type.clone(),
                 to: to_type.clone(),
             });
-        } else if Self::is_pointer_type(&from_type) && Self::is_pointer_type(&to_type) {
-            instructions.push(Instruction::Copy {
-                src: value,
-                dst: dst.clone(),
-            });
-        } else if Self::is_pointer_type(&from_type) && Self::is_integer_type(&to_type) {
-            instructions.push(Instruction::Copy {
-                src: value,
-                dst: dst.clone(),
-            });
-        } else if Self::is_integer_type(&from_type) && Self::is_pointer_type(&to_type) {
+        } else if (Self::is_pointer_type(&from_type) && Self::is_pointer_type(&to_type))
+            || (Self::is_pointer_type(&from_type) && Self::is_integer_type(&to_type))
+            || (Self::is_integer_type(&from_type) && Self::is_pointer_type(&to_type))
+        {
             instructions.push(Instruction::Copy {
                 src: value,
                 dst: dst.clone(),
@@ -538,6 +560,7 @@ impl TackyGen {
             Type::Void => panic!("void type has no bit width"),
             Type::Pointer(_) => 64,
             Type::FunType(_, _) => panic!("function type has no bit width"),
+            Type::Array(_, _) => panic!("array type has no bit width"),
         }
     }
 
@@ -571,6 +594,7 @@ impl TackyGen {
             Type::Void => panic!("void type has no rank"),
             Type::Double => panic!("double type has no integer rank"),
             Type::Pointer(_) | Type::FunType(_, _) => panic!("pointer type has no rank"),
+            Type::Array(_, _) => panic!("array type has no rank"),
         }
     }
 
@@ -630,6 +654,7 @@ impl TackyGen {
                 Type::Void => panic!("cannot convert constant to void"),
                 Type::Pointer(_) => panic!("cannot convert floating constant to pointer"),
                 Type::FunType(_, _) => panic!("cannot convert floating constant to function type"),
+                Type::Array(_, _) => panic!("cannot convert floating constant to array type"),
             };
         }
 
@@ -675,6 +700,7 @@ impl TackyGen {
             Type::Void => panic!("cannot convert constant to void"),
             Type::Pointer(_) => panic!("cannot convert integer constant to pointer"),
             Type::FunType(_, _) => panic!("cannot convert integer constant to function type"),
+            Type::Array(_, _) => panic!("cannot convert integer constant to array type"),
         }
     }
 
@@ -876,7 +902,24 @@ impl TackyGen {
         let result_type = expr.r#type.clone();
         match &expr.kind {
             ExprKind::Constant(c) => Value::Constant(c.clone()),
-            ExprKind::Var(name) => self.value_for_variable(name),
+            ExprKind::Var(name) => {
+                let value = self.value_for_variable(name);
+                let storage_ty = self.type_of_value(&value);
+                if matches!(storage_ty, Type::Array(_, _))
+                    && matches!(result_type, Type::Pointer(_))
+                {
+                    let tmp = self.fresh_tmp();
+                    self.record_temp(&tmp, &result_type);
+                    let dst = Value::Var(tmp.clone());
+                    instructions.push(Instruction::GetAddress {
+                        src: value,
+                        dst: dst.clone(),
+                    });
+                    dst
+                } else {
+                    value
+                }
+            }
             ExprKind::FunctionCall(name, args) => {
                 self.gen_function_call(name, args, &result_type, instructions)
             }
@@ -911,12 +954,8 @@ impl TackyGen {
                 });
                 dst
             }
-            ExprKind::Add(lhs, rhs) => {
-                self.gen_binary_expr(BinaryOp::Add, lhs, rhs, &result_type, instructions)
-            }
-            ExprKind::Sub(lhs, rhs) => {
-                self.gen_binary_expr(BinaryOp::Subtract, lhs, rhs, &result_type, instructions)
-            }
+            ExprKind::Add(lhs, rhs) => self.gen_add_expr(lhs, rhs, &result_type, instructions),
+            ExprKind::Sub(lhs, rhs) => self.gen_sub_expr(lhs, rhs, &result_type, instructions),
             ExprKind::Mul(lhs, rhs) => {
                 self.gen_binary_expr(BinaryOp::Multiply, lhs, rhs, &result_type, instructions)
             }
@@ -1223,6 +1262,171 @@ impl TackyGen {
         dst
     }
 
+    fn gen_add_expr(
+        &mut self,
+        lhs: &Expr,
+        rhs: &Expr,
+        result_type: &Type,
+        instructions: &mut Vec<Instruction>,
+    ) -> Value {
+        let lhs_is_pointer = Self::is_pointer_type(&lhs.r#type);
+        let rhs_is_pointer = Self::is_pointer_type(&rhs.r#type);
+
+        match (lhs_is_pointer, rhs_is_pointer) {
+            (true, false) => self.gen_pointer_add(lhs, rhs, result_type, false, instructions),
+            (false, true) => self.gen_pointer_add(rhs, lhs, result_type, false, instructions),
+            (true, true) => panic!("pointer addition is not supported"),
+            (false, false) => {
+                self.gen_binary_expr(BinaryOp::Add, lhs, rhs, result_type, instructions)
+            }
+        }
+    }
+
+    fn gen_sub_expr(
+        &mut self,
+        lhs: &Expr,
+        rhs: &Expr,
+        result_type: &Type,
+        instructions: &mut Vec<Instruction>,
+    ) -> Value {
+        let lhs_is_pointer = Self::is_pointer_type(&lhs.r#type);
+        let rhs_is_pointer = Self::is_pointer_type(&rhs.r#type);
+
+        match (lhs_is_pointer, rhs_is_pointer) {
+            (true, false) => self.gen_pointer_add(lhs, rhs, result_type, true, instructions),
+            (true, true) => self.gen_pointer_difference(lhs, rhs, result_type, instructions),
+            (false, true) => panic!("integer minus pointer is not supported"),
+            (false, false) => {
+                self.gen_binary_expr(BinaryOp::Subtract, lhs, rhs, result_type, instructions)
+            }
+        }
+    }
+
+    fn gen_pointer_add(
+        &mut self,
+        ptr_expr: &Expr,
+        index_expr: &Expr,
+        result_type: &Type,
+        negate_index: bool,
+        instructions: &mut Vec<Instruction>,
+    ) -> Value {
+        let ptr_value = self.gen_expr(ptr_expr, instructions);
+        let ptr = self.convert_value(
+            ptr_value,
+            ptr_expr.r#type.clone(),
+            result_type.clone(),
+            instructions,
+        );
+
+        let index_value = self.gen_expr(index_expr, instructions);
+        let mut index = self.convert_value(
+            index_value,
+            index_expr.r#type.clone(),
+            Type::Long,
+            instructions,
+        );
+
+        if negate_index {
+            let tmp_name = self.fresh_tmp();
+            self.record_temp(&tmp_name, &Type::Long);
+            let tmp = Value::Var(tmp_name.clone());
+            instructions.push(Instruction::Unary {
+                op: UnaryOp::Negate,
+                src: index,
+                dst: tmp.clone(),
+            });
+            index = tmp;
+        }
+
+        let base_type = self.pointer_base_type(&ptr_expr.r#type);
+        let scale = Self::size_of_type(base_type);
+        if scale <= 0 {
+            panic!("invalid pointer element size {scale}");
+        }
+
+        let dst_name = self.fresh_tmp();
+        self.record_temp(&dst_name, result_type);
+        let dst = Value::Var(dst_name.clone());
+        instructions.push(Instruction::AddPtr {
+            ptr,
+            index,
+            scale,
+            dst: dst.clone(),
+        });
+
+        dst
+    }
+
+    fn gen_pointer_difference(
+        &mut self,
+        lhs: &Expr,
+        rhs: &Expr,
+        result_type: &Type,
+        instructions: &mut Vec<Instruction>,
+    ) -> Value {
+        let lhs_value = self.gen_expr(lhs, instructions);
+        let rhs_value = self.gen_expr(rhs, instructions);
+
+        let lhs_long = self.convert_value(lhs_value, lhs.r#type.clone(), Type::Long, instructions);
+        let rhs_long = self.convert_value(rhs_value, rhs.r#type.clone(), Type::Long, instructions);
+
+        let diff_tmp_name = self.fresh_tmp();
+        self.record_temp(&diff_tmp_name, &Type::Long);
+        let diff_value = Value::Var(diff_tmp_name.clone());
+        instructions.push(Instruction::Binary {
+            op: BinaryOp::Subtract,
+            src1: lhs_long,
+            src2: rhs_long,
+            dst: diff_value.clone(),
+        });
+
+        let base_type = self.pointer_base_type(&lhs.r#type);
+        let scale = Self::size_of_type(base_type);
+        if scale <= 0 {
+            panic!("invalid pointer element size {scale}");
+        }
+
+        let quotient = if scale != 1 {
+            let scale_const = Value::Constant(Const::Long(scale));
+            let quot_tmp_name = self.fresh_tmp();
+            self.record_temp(&quot_tmp_name, &Type::Long);
+            let quot_value = Value::Var(quot_tmp_name.clone());
+            instructions.push(Instruction::Binary {
+                op: BinaryOp::Divide,
+                src1: diff_value,
+                src2: scale_const,
+                dst: quot_value.clone(),
+            });
+            quot_value
+        } else {
+            diff_value
+        };
+
+        self.convert_value(quotient, Type::Long, result_type.clone(), instructions)
+    }
+
+    fn pointer_base_type<'a>(&self, pointer_type: &'a Type) -> &'a Type {
+        match pointer_type {
+            Type::Pointer(inner) => inner.as_ref(),
+            other => panic!("expected pointer type, found {other:?}"),
+        }
+    }
+
+    fn size_of_type(ty: &Type) -> i64 {
+        match ty {
+            Type::Int | Type::UInt => 4,
+            Type::Long | Type::ULong => 8,
+            Type::Double => 8,
+            Type::Pointer(_) => 8,
+            Type::Array(inner, len) => {
+                let len_i64 = i64::try_from(*len).expect("array size exceeds i64");
+                len_i64 * Self::size_of_type(inner)
+            }
+            Type::Void => panic!("void type has no size"),
+            Type::FunType(_, _) => panic!("function type has no size"),
+        }
+    }
+
     fn gen_pointer_equality(
         &mut self,
         op: BinaryOp,
@@ -1367,22 +1571,68 @@ impl TackyGen {
         let updated_tmp_name = self.fresh_tmp();
         self.record_temp(&updated_tmp_name, &target_type);
         let updated_tmp = Value::Var(updated_tmp_name.clone());
-        let one = match target_type {
-            Type::Int => Value::Constant(Const::Int(1)),
-            Type::UInt => Value::Constant(Const::UInt(1)),
-            Type::Long => Value::Constant(Const::Long(1)),
-            Type::ULong => Value::Constant(Const::ULong(1)),
-            Type::Double => Value::Constant(Const::Double(1.0)),
+        match &target_type {
+            Type::Int => {
+                instructions.push(Instruction::Binary {
+                    op,
+                    src1: target.clone(),
+                    src2: Value::Constant(Const::Int(1)),
+                    dst: updated_tmp.clone(),
+                });
+            }
+            Type::UInt => {
+                instructions.push(Instruction::Binary {
+                    op,
+                    src1: target.clone(),
+                    src2: Value::Constant(Const::UInt(1)),
+                    dst: updated_tmp.clone(),
+                });
+            }
+            Type::Long => {
+                instructions.push(Instruction::Binary {
+                    op,
+                    src1: target.clone(),
+                    src2: Value::Constant(Const::Long(1)),
+                    dst: updated_tmp.clone(),
+                });
+            }
+            Type::ULong => {
+                instructions.push(Instruction::Binary {
+                    op,
+                    src1: target.clone(),
+                    src2: Value::Constant(Const::ULong(1)),
+                    dst: updated_tmp.clone(),
+                });
+            }
+            Type::Double => {
+                instructions.push(Instruction::Binary {
+                    op,
+                    src1: target.clone(),
+                    src2: Value::Constant(Const::Double(1.0)),
+                    dst: updated_tmp.clone(),
+                });
+            }
+            Type::Pointer(inner) => {
+                let scale = Self::size_of_type(inner);
+                if scale <= 0 {
+                    panic!("invalid pointer element size {scale}");
+                }
+                let step = match op {
+                    BinaryOp::Add => Const::Long(1),
+                    BinaryOp::Subtract => Const::Long(-1),
+                    _ => panic!("unsupported operation for pointer increment/decrement"),
+                };
+                instructions.push(Instruction::AddPtr {
+                    ptr: target.clone(),
+                    index: Value::Constant(step),
+                    scale,
+                    dst: updated_tmp.clone(),
+                });
+            }
             Type::Void => panic!("cannot increment void"),
-            Type::Pointer(_) => panic!("pointer increment not supported"),
             Type::FunType(_, _) => panic!("function type increment not supported"),
-        };
-        instructions.push(Instruction::Binary {
-            op,
-            src1: target.clone(),
-            src2: one,
-            dst: updated_tmp.clone(),
-        });
+            Type::Array(_, _) => panic!("array increment not supported"),
+        }
         instructions.push(Instruction::Copy {
             src: updated_tmp.clone(),
             dst: target.clone(),

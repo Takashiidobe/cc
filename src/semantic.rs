@@ -45,9 +45,19 @@ impl SemanticAnalyzer {
                     );
                 }
                 DeclKind::Function(func) => {
+                    if Self::is_array_type(&func.return_type) {
+                        panic!(
+                            "function '{}' declared with array return type",
+                            func.name
+                        );
+                    }
                     let signature = FunctionSignature {
                         return_type: func.return_type.clone(),
-                        param_types: func.params.iter().map(|p| p.r#type.clone()).collect(),
+                        param_types: func
+                            .params
+                            .iter()
+                            .map(|p| self.adjust_parameter_type(p.r#type.clone()))
+                            .collect(),
                     };
                     self.functions.insert(func.name.clone(), signature);
                 }
@@ -104,18 +114,18 @@ impl SemanticAnalyzer {
                         panic!("parameter declared with void type");
                     }
 
+                    let adjusted_type = self.adjust_parameter_type(param.r#type.clone());
                     let unique = self.fresh_name(&param.name);
-                    let ty = param.r#type.clone();
                     self.insert_symbol(
                         param.name.clone(),
                         Symbol {
                             unique: unique.clone(),
-                            ty: ty.clone(),
+                            ty: adjusted_type.clone(),
                         },
                     );
                     unique_params.push(ParameterDecl {
                         name: unique,
-                        r#type: ty,
+                        r#type: adjusted_type,
                     });
                 }
 
@@ -137,7 +147,13 @@ impl SemanticAnalyzer {
             }
             None => FunctionDecl {
                 name,
-                params,
+                params: params
+                    .into_iter()
+                    .map(|param| ParameterDecl {
+                        name: param.name,
+                        r#type: self.adjust_parameter_type(param.r#type),
+                    })
+                    .collect(),
                 body: None,
                 storage_class,
                 return_type,
@@ -305,6 +321,14 @@ impl SemanticAnalyzer {
     }
 
     fn analyze_expr(&mut self, expr: Expr) -> Expr {
+        self.analyze_expr_internal(expr, true)
+    }
+
+    fn analyze_expr_no_decay(&mut self, expr: Expr) -> Expr {
+        self.analyze_expr_internal(expr, false)
+    }
+
+    fn analyze_expr_internal(&mut self, expr: Expr, decay_arrays: bool) -> Expr {
         let Expr {
             kind,
             start,
@@ -313,7 +337,7 @@ impl SemanticAnalyzer {
             r#type: _,
         } = expr;
 
-        match kind {
+        let result = match kind {
             ExprKind::Constant(c) => {
                 let ty = match &c {
                     Const::Int(_) => Type::Int,
@@ -379,6 +403,9 @@ impl SemanticAnalyzer {
                 if target == Type::Void {
                     panic!("cannot cast to void type");
                 }
+                if Self::is_array_type(&target) {
+                    panic!("cannot cast to array type");
+                }
 
                 let expr = self.analyze_expr(*expr);
                 self.ensure_castable(&expr.r#type, &target);
@@ -409,7 +436,7 @@ impl SemanticAnalyzer {
                 }
             }
             ExprKind::AddrOf(expr) => {
-                let expr = self.analyze_expr(*expr);
+                let expr = self.analyze_expr_no_decay(*expr);
                 self.ensure_lvalue(&expr, "address-of operand");
                 let ty = Type::Pointer(Box::new(expr.r#type.clone()));
                 Expr {
@@ -443,10 +470,30 @@ impl SemanticAnalyzer {
                 let cond = self.analyze_expr(*cond);
                 self.ensure_condition_type(&cond.r#type, "conditional condition");
                 let then_expr = self.analyze_expr(*then_expr);
-                self.ensure_numeric_type(&then_expr.r#type, "conditional arm");
                 let else_expr = self.analyze_expr(*else_expr);
-                self.ensure_numeric_type(&else_expr.r#type, "conditional arm");
-                let ty = self.numeric_result_type(&then_expr.r#type, &else_expr.r#type);
+                let then_type = then_expr.r#type.clone();
+                let else_type = else_expr.r#type.clone();
+                let result_type = if Self::is_numeric_type(&then_type)
+                    && Self::is_numeric_type(&else_type)
+                {
+                    self.numeric_result_type(&then_type, &else_type)
+                } else if Self::is_pointer_type(&then_type)
+                    && Self::is_pointer_type(&else_type)
+                {
+                    if !Self::pointer_types_compatible(&then_type, &else_type) {
+                        panic!(
+                            "conditional operator requires compatible pointer types ({:?} vs {:?})",
+                            then_type, else_type
+                        );
+                    }
+                    then_type.clone()
+                } else {
+                    panic!(
+                        "conditional operator requires numeric or pointer operands ({:?} vs {:?})",
+                        then_type, else_type
+                    );
+                };
+
                 Expr {
                     kind: ExprKind::Conditional(
                         Box::new(cond),
@@ -456,15 +503,11 @@ impl SemanticAnalyzer {
                     start,
                     end,
                     source,
-                    r#type: ty,
+                    r#type: result_type,
                 }
             }
-            ExprKind::Add(lhs, rhs) => {
-                self.analyze_arithmetic_binary(*lhs, *rhs, start, end, source, ExprKind::Add)
-            }
-            ExprKind::Sub(lhs, rhs) => {
-                self.analyze_arithmetic_binary(*lhs, *rhs, start, end, source, ExprKind::Sub)
-            }
+            ExprKind::Add(lhs, rhs) => self.analyze_add(*lhs, *rhs, start, end, source),
+            ExprKind::Sub(lhs, rhs) => self.analyze_sub(*lhs, *rhs, start, end, source),
             ExprKind::Mul(lhs, rhs) => {
                 self.analyze_arithmetic_binary(*lhs, *rhs, start, end, source, ExprKind::Mul)
             }
@@ -536,8 +579,11 @@ impl SemanticAnalyzer {
                 }
             }
             ExprKind::Assignment(lhs, rhs) => {
-                let lhs = self.analyze_expr(*lhs);
+                let lhs = self.analyze_expr_no_decay(*lhs);
                 self.ensure_lvalue(&lhs, "assignment left-hand side");
+                if Self::is_array_type(&lhs.r#type) {
+                    panic!("assignment to array type is not allowed");
+                }
                 let lhs_type = lhs.r#type.clone();
                 let rhs = self.analyze_expr(*rhs);
                 self.ensure_assignable(&lhs_type, &rhs.r#type, "assignment");
@@ -550,7 +596,7 @@ impl SemanticAnalyzer {
                 }
             }
             ExprKind::PreIncrement(expr) => {
-                let expr = self.analyze_expr(*expr);
+                let expr = self.analyze_expr_no_decay(*expr);
                 self.ensure_lvalue(&expr, "pre-increment target");
                 self.ensure_numeric_type(&expr.r#type, "pre-increment operand");
                 let ty = expr.r#type.clone();
@@ -563,7 +609,7 @@ impl SemanticAnalyzer {
                 }
             }
             ExprKind::PreDecrement(expr) => {
-                let expr = self.analyze_expr(*expr);
+                let expr = self.analyze_expr_no_decay(*expr);
                 self.ensure_lvalue(&expr, "pre-decrement target");
                 self.ensure_numeric_type(&expr.r#type, "pre-decrement operand");
                 let ty = expr.r#type.clone();
@@ -576,7 +622,7 @@ impl SemanticAnalyzer {
                 }
             }
             ExprKind::PostIncrement(expr) => {
-                let expr = self.analyze_expr(*expr);
+                let expr = self.analyze_expr_no_decay(*expr);
                 self.ensure_lvalue(&expr, "post-increment target");
                 self.ensure_numeric_type(&expr.r#type, "post-increment operand");
                 let ty = expr.r#type.clone();
@@ -589,7 +635,7 @@ impl SemanticAnalyzer {
                 }
             }
             ExprKind::PostDecrement(expr) => {
-                let expr = self.analyze_expr(*expr);
+                let expr = self.analyze_expr_no_decay(*expr);
                 self.ensure_lvalue(&expr, "post-decrement target");
                 self.ensure_numeric_type(&expr.r#type, "post-decrement operand");
                 let ty = expr.r#type.clone();
@@ -601,7 +647,9 @@ impl SemanticAnalyzer {
                     r#type: ty,
                 }
             }
-        }
+        };
+
+        self.apply_array_decay(result, decay_arrays)
     }
 
     fn analyze_for_init(&mut self, init: ForInit) -> ForInit {
@@ -661,6 +709,89 @@ impl SemanticAnalyzer {
             end,
             source,
             r#type: ty,
+        }
+    }
+
+    fn analyze_add(
+        &mut self,
+        lhs: Expr,
+        rhs: Expr,
+        start: usize,
+        end: usize,
+        source: String,
+    ) -> Expr {
+        let lhs = self.analyze_expr(lhs);
+        let rhs = self.analyze_expr(rhs);
+        let lhs_type = lhs.r#type.clone();
+        let rhs_type = rhs.r#type.clone();
+
+        let result_type = if Self::is_numeric_type(&lhs_type) && Self::is_numeric_type(&rhs_type)
+        {
+            self.numeric_result_type(&lhs_type, &rhs_type)
+        } else if Self::is_pointer_type(&lhs_type) && Self::is_integer_type(&rhs_type) {
+            self.pointer_arithmetic_base(&lhs_type, "pointer addition");
+            lhs_type.clone()
+        } else if Self::is_integer_type(&lhs_type) && Self::is_pointer_type(&rhs_type) {
+            self.pointer_arithmetic_base(&rhs_type, "pointer addition");
+            rhs_type.clone()
+        } else {
+            panic!(
+                "unsupported operand types {:?} and {:?} in addition",
+                lhs_type, rhs_type
+            );
+        };
+
+        Expr {
+            kind: ExprKind::Add(Box::new(lhs), Box::new(rhs)),
+            start,
+            end,
+            source,
+            r#type: result_type,
+        }
+    }
+
+    fn analyze_sub(
+        &mut self,
+        lhs: Expr,
+        rhs: Expr,
+        start: usize,
+        end: usize,
+        source: String,
+    ) -> Expr {
+        let lhs = self.analyze_expr(lhs);
+        let rhs = self.analyze_expr(rhs);
+        let lhs_type = lhs.r#type.clone();
+        let rhs_type = rhs.r#type.clone();
+
+        let result_type = if Self::is_numeric_type(&lhs_type) && Self::is_numeric_type(&rhs_type)
+        {
+            self.numeric_result_type(&lhs_type, &rhs_type)
+        } else if Self::is_pointer_type(&lhs_type) && Self::is_integer_type(&rhs_type) {
+            self.pointer_arithmetic_base(&lhs_type, "pointer subtraction");
+            lhs_type.clone()
+        } else if Self::is_pointer_type(&lhs_type) && Self::is_pointer_type(&rhs_type) {
+            let lhs_base = self.pointer_arithmetic_base(&lhs_type, "pointer subtraction");
+            let rhs_base = self.pointer_arithmetic_base(&rhs_type, "pointer subtraction");
+            if lhs_base != rhs_base {
+                panic!(
+                    "pointer subtraction requires identical pointer types ({:?} vs {:?})",
+                    lhs_type, rhs_type
+                );
+            }
+            Type::Long
+        } else {
+            panic!(
+                "unsupported operand types {:?} and {:?} in subtraction",
+                lhs_type, rhs_type
+            );
+        };
+
+        Expr {
+            kind: ExprKind::Sub(Box::new(lhs), Box::new(rhs)),
+            start,
+            end,
+            source,
+            r#type: result_type,
         }
     }
 
@@ -815,45 +946,56 @@ impl SemanticAnalyzer {
     }
 
     fn ensure_integer_type(&self, ty: &Type, context: &str) {
-        if !Self::is_integer_type(ty) {
+        let ty = self.decay_array_type(ty);
+        if !Self::is_integer_type(&ty) {
             panic!("{context} requires integer type, found {:?}", ty);
         }
     }
 
     fn ensure_condition_type(&self, ty: &Type, context: &str) {
-        if Self::is_integer_type(ty) || Self::is_pointer_type(ty) {
+        let ty = self.decay_array_type(ty);
+        if Self::is_integer_type(&ty) || Self::is_pointer_type(&ty) {
             return;
         }
         panic!("{context} requires scalar type, found {:?}", ty);
     }
 
     fn ensure_numeric_type(&self, ty: &Type, context: &str) {
-        if !Self::is_numeric_type(ty) {
+        let ty = self.decay_array_type(ty);
+        if !Self::is_numeric_type(&ty) {
             panic!("{context} requires numeric type, found {:?}", ty);
         }
     }
 
     fn ensure_assignable(&self, target: &Type, value: &Type, context: &str) {
-        if target == value {
+        if Self::is_array_type(target) {
+            panic!("{context} cannot assign to array type");
+        }
+
+        let value_type = self.decay_array_type(value);
+
+        if target == &value_type {
             return;
         }
 
-        if Self::is_numeric_type(target) && Self::is_numeric_type(value) {
+        if Self::is_numeric_type(target) && Self::is_numeric_type(&value_type) {
             return;
         }
 
         if Self::is_pointer_type(target) {
-            if Self::is_pointer_type(value) && Self::pointer_types_compatible(target, value) {
+            if Self::is_pointer_type(&value_type)
+                && Self::pointer_types_compatible(target, &value_type)
+            {
                 return;
             }
-            if Self::is_integer_type(value) {
+            if Self::is_integer_type(&value_type) {
                 return;
             }
         }
 
         panic!(
             "{context} requires compatible types ({:?} <- {:?})",
-            target, value
+            target, value_type
         );
     }
 
@@ -874,19 +1016,26 @@ impl SemanticAnalyzer {
     }
 
     fn ensure_castable(&self, from: &Type, to: &Type) {
-        if Self::is_numeric_type(from) && Self::is_numeric_type(to) {
+        if Self::is_array_type(to) {
+            panic!("cannot cast to array type");
+        }
+
+        let from_type = self.decay_array_type(from);
+        let to_type = self.decay_array_type(to);
+
+        if Self::is_numeric_type(&from_type) && Self::is_numeric_type(&to_type) {
             return;
         }
-        if Self::is_pointer_type(from) && Self::is_pointer_type(to) {
+        if Self::is_pointer_type(&from_type) && Self::is_pointer_type(&to_type) {
             return;
         }
-        if Self::is_pointer_type(from) && Self::is_integer_type(to) {
+        if Self::is_pointer_type(&from_type) && Self::is_integer_type(&to_type) {
             return;
         }
-        if Self::is_integer_type(from) && Self::is_pointer_type(to) {
+        if Self::is_integer_type(&from_type) && Self::is_pointer_type(&to_type) {
             return;
         }
-        panic!("unsupported cast {:?} -> {:?}", from, to);
+        panic!("unsupported cast {:?} -> {:?}", from_type, to_type);
     }
 
     fn type_rank(ty: &Type) -> usize {
@@ -898,6 +1047,7 @@ impl SemanticAnalyzer {
             Type::Void => panic!("void type has no integer rank"),
             Type::Double => panic!("double type has no integer rank"),
             Type::Pointer(_) | Type::FunType(_, _) => panic!("pointer type has no integer rank"),
+            Type::Array(_, _) => panic!("array type has no integer rank"),
         }
     }
 
@@ -915,20 +1065,69 @@ impl SemanticAnalyzer {
     }
 
     fn ensure_pointer_comparable(&self, lhs: &Type, rhs: &Type, context: &str) {
-        if Self::is_pointer_type(lhs) && Self::is_pointer_type(rhs) {
-            if Self::pointer_types_compatible(lhs, rhs) {
+        let lhs_type = self.decay_array_type(lhs);
+        let rhs_type = self.decay_array_type(rhs);
+
+        if Self::is_pointer_type(&lhs_type) && Self::is_pointer_type(&rhs_type) {
+            if Self::pointer_types_compatible(&lhs_type, &rhs_type) {
                 return;
             }
-        } else if (Self::is_pointer_type(lhs) && Self::is_integer_type(rhs))
-            || (Self::is_integer_type(lhs) && Self::is_pointer_type(rhs))
+        } else if (Self::is_pointer_type(&lhs_type) && Self::is_integer_type(&rhs_type))
+            || (Self::is_integer_type(&lhs_type) && Self::is_pointer_type(&rhs_type))
         {
             return;
         }
 
         panic!(
             "{context} requires compatible pointer types ({:?} vs {:?})",
-            lhs, rhs
+            lhs_type, rhs_type
         );
+    }
+
+    fn pointer_arithmetic_base<'a>(&self, ty: &'a Type, context: &str) -> &'a Type {
+        match ty {
+            Type::Pointer(inner) => match inner.as_ref() {
+                Type::Void => panic!("{context} requires pointer to sized type"),
+                Type::FunType(_, _) => panic!("{context} requires pointer to sized type"),
+                base => base,
+            },
+            _ => panic!("{context} requires pointer operand"),
+        }
+    }
+
+    fn adjust_parameter_type(&self, ty: Type) -> Type {
+        match ty {
+            Type::Array(inner, _) => Type::Pointer(inner),
+            Type::FunType(params, ret) => Type::Pointer(Box::new(Type::FunType(params, ret))),
+            other => other,
+        }
+    }
+
+    fn decay_array_type(&self, ty: &Type) -> Type {
+        match ty {
+            Type::Array(inner, _) => Type::Pointer(inner.clone()),
+            Type::FunType(params, ret) => {
+                Type::Pointer(Box::new(Type::FunType(params.clone(), ret.clone())))
+            }
+            other => other.clone(),
+        }
+    }
+
+    fn apply_array_decay(&self, mut expr: Expr, decay_arrays: bool) -> Expr {
+        if decay_arrays {
+            expr.r#type = match expr.r#type.clone() {
+                Type::Array(inner, _) => Type::Pointer(inner),
+                Type::FunType(params, ret) => {
+                    Type::Pointer(Box::new(Type::FunType(params, ret)))
+                }
+                other => other,
+            };
+        }
+        expr
+    }
+
+    fn is_array_type(ty: &Type) -> bool {
+        matches!(ty, Type::Array(_, _))
     }
 
     fn insert_symbol(&mut self, name: String, symbol: Symbol) {

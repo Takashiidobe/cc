@@ -1,4 +1,5 @@
 use crate::tokenize::{Token, TokenKind};
+use std::convert::TryFrom;
 use std::mem;
 
 pub type Expr = Node<ExprKind>;
@@ -144,6 +145,7 @@ pub enum Type {
     Double,
     Void,
     Pointer(Box<Type>),
+    Array(Box<Type>, usize),
     FunType(Vec<Type>, Box<Type>),
 }
 
@@ -190,6 +192,10 @@ struct ParsedDeclarator {
 enum TypeExpr {
     Base,
     Pointer(Box<TypeExpr>),
+    Array {
+        size: usize,
+        elem: Box<TypeExpr>,
+    },
     Function {
         params: Vec<ParameterDecl>,
         ret: Box<TypeExpr>,
@@ -203,6 +209,10 @@ impl TypeExpr {
                 params,
                 ret: Box::new(ret.add_pointer()),
             },
+            TypeExpr::Array { size, elem } => TypeExpr::Array {
+                size,
+                elem: Box::new(elem.add_pointer()),
+            },
             other => TypeExpr::Pointer(Box::new(other)),
         }
     }
@@ -210,9 +220,23 @@ impl TypeExpr {
     fn add_function(self, params: Vec<ParameterDecl>) -> Self {
         match self {
             TypeExpr::Pointer(inner) => TypeExpr::Pointer(Box::new(inner.add_function(params))),
+            TypeExpr::Array { size, elem } => TypeExpr::Array {
+                size,
+                elem: Box::new(elem.add_function(params)),
+            },
             other => TypeExpr::Function {
                 params,
                 ret: Box::new(other),
+            },
+        }
+    }
+
+    fn add_array(self, size: usize) -> Self {
+        match self {
+            TypeExpr::Pointer(inner) => TypeExpr::Pointer(Box::new(inner.add_array(size))),
+            other => TypeExpr::Array {
+                size,
+                elem: Box::new(other),
             },
         }
     }
@@ -221,6 +245,7 @@ impl TypeExpr {
         match self {
             TypeExpr::Base => base,
             TypeExpr::Pointer(inner) => Type::Pointer(Box::new(inner.apply(base))),
+            TypeExpr::Array { size, elem } => Type::Array(Box::new(elem.apply(base)), *size),
             TypeExpr::Function { params, ret } => {
                 let param_types = params.iter().map(|p| p.r#type.clone()).collect();
                 let return_type = ret.apply(base);
@@ -337,9 +362,7 @@ impl TypeSpecifierState {
         let is_unsigned = matches!(self.signedness, Some(false));
         if self.saw_long {
             if is_unsigned { Type::ULong } else { Type::Long }
-        } else {
-            if is_unsigned { Type::UInt } else { Type::Int }
-        }
+        } else if is_unsigned { Type::UInt } else { Type::Int }
     }
 }
 
@@ -417,7 +440,6 @@ impl Parser {
     }
 
     fn parse_declarator(&mut self) -> ParsedDeclarator {
-        dbg!(self.peek());
         if self.peek().kind == TokenKind::Star {
             self.advance();
             let mut inner = self.parse_declarator();
@@ -448,15 +470,56 @@ impl Parser {
             );
         };
 
-        while self.pos < self.tokens.len() && self.peek().kind == TokenKind::LParen {
-            self.advance();
-            let params = self.parse_parameter_list();
-            self.skip(&TokenKind::RParen);
-            let current = mem::replace(&mut declarator.type_expr, TypeExpr::Base);
-            declarator.type_expr = current.add_function(params);
+        while self.pos < self.tokens.len() {
+            match self.peek().kind {
+                TokenKind::LParen => {
+                    self.advance();
+                    let params = self.parse_parameter_list();
+                    self.skip(&TokenKind::RParen);
+                    let current = mem::replace(&mut declarator.type_expr, TypeExpr::Base);
+                    declarator.type_expr = current.add_function(params);
+                }
+                TokenKind::LBracket => {
+                    self.advance();
+                    let size = self.parse_array_size();
+                    self.skip(&TokenKind::RBracket);
+                    let current = mem::replace(&mut declarator.type_expr, TypeExpr::Base);
+                    declarator.type_expr = current.add_array(size);
+                }
+                _ => break,
+            }
         }
 
         declarator
+    }
+
+    fn parse_array_size(&mut self) -> usize {
+        let token = self.peek();
+        match token.kind.clone() {
+            TokenKind::Integer(n) => {
+                if n < 0 {
+                    panic!("array size must be non-negative");
+                }
+                self.advance();
+                usize::try_from(n).expect("array size does not fit in usize")
+            }
+            TokenKind::LongInteger(n) => {
+                if n < 0 {
+                    panic!("array size must be non-negative");
+                }
+                self.advance();
+                usize::try_from(n).expect("array size does not fit in usize")
+            }
+            TokenKind::UnsignedInteger(n) => {
+                self.advance();
+                usize::try_from(n).expect("array size does not fit in usize")
+            }
+            TokenKind::UnsignedLongInteger(n) => {
+                self.advance();
+                usize::try_from(n).expect("array size does not fit in usize")
+            }
+            kind => panic!("expected constant array size, found {kind:?}"),
+        }
     }
 
     fn parse_parameter_list(&mut self) -> Vec<ParameterDecl> {
@@ -464,14 +527,13 @@ impl Parser {
             return Vec::new();
         }
 
-        if self.peek().kind == TokenKind::Void {
-            if self.pos + 1 < self.tokens.len()
+        if self.peek().kind == TokenKind::Void
+            && self.pos + 1 < self.tokens.len()
                 && self.tokens[self.pos + 1].kind == TokenKind::RParen
             {
                 self.advance();
                 return Vec::new();
             }
-        }
 
         let mut params = Vec::new();
 
@@ -1490,6 +1552,31 @@ impl Parser {
                         source,
                         r#type: Type::Int,
                     };
+                }
+                TokenKind::LBracket => {
+                    self.advance();
+                    let index_expr = self.expr();
+                    self.skip(&TokenKind::RBracket);
+                    let start = node.start;
+                    let end = self.index;
+                    let source = self.source_slice(start, end);
+                    let base_expr = Box::new(node);
+                    let index_boxed = Box::new(index_expr);
+                    let add_expr = Expr {
+                        kind: ExprKind::Add(base_expr, index_boxed),
+                        start,
+                        end,
+                        source: source.clone(),
+                        r#type: Type::Int,
+                    };
+                    let deref_expr = Expr {
+                        kind: ExprKind::Dereference(Box::new(add_expr)),
+                        start,
+                        end,
+                        source: source.clone(),
+                        r#type: Type::Int,
+                    };
+                    node = deref_expr;
                 }
                 TokenKind::LParen => {
                     let start = node.start;
