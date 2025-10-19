@@ -27,7 +27,7 @@ pub struct StaticVariable {
     pub name: String,
     pub global: bool,
     pub ty: Type,
-    pub init: i64,
+    pub init: Option<Const>,
 }
 
 #[derive(Debug, Clone)]
@@ -81,6 +81,12 @@ pub enum Instruction {
     Truncate {
         src: Value,
         dst: Value,
+    },
+    Convert {
+        src: Value,
+        dst: Value,
+        from: Type,
+        to: Type,
     },
 }
 
@@ -293,7 +299,16 @@ impl TackyGen {
             return None;
         }
 
-        let init_value = init.map(|expr| Self::eval_const_expr(&expr)).unwrap_or(0);
+        let init_value = init.map(|expr| match &expr.kind {
+            ExprKind::Constant(c) => Self::convert_constant(c.clone(), &expr.r#type, &r#type),
+            _ => {
+                if r#type == Type::Double {
+                    panic!("non-constant double initializer");
+                }
+                let value = Self::eval_const_expr(&expr);
+                Self::convert_constant(Const::Long(value), &Type::Long, &r#type)
+            }
+        });
         let global = storage_class != Some(StorageClass::Static);
 
         Some(StaticVariable {
@@ -402,48 +417,55 @@ impl TackyGen {
             return value;
         }
 
-        if !Self::is_integer_type(&from_type) || !Self::is_integer_type(&to_type) {
-            panic!(
-                "unsupported conversion from {:?} to {:?}",
-                from_type, to_type
-            );
-        }
-
         if let Value::Constant(c) = value {
             let converted = Self::convert_constant(c, &from_type, &to_type);
             return Value::Constant(converted);
         }
 
-        let from_bits = Self::bit_width(&from_type);
-        let to_bits = Self::bit_width(&to_type);
-
         let tmp = self.fresh_tmp();
         self.record_temp(&tmp, &to_type);
         let dst = Value::Var(tmp);
 
-        if from_bits == to_bits {
-            instructions.push(Instruction::Copy {
-                src: value,
-                dst: dst.clone(),
-            });
-        } else if to_bits > from_bits {
-            let instr = if Self::is_unsigned(&from_type) {
-                Instruction::ZeroExtend {
+        if Self::is_integer_type(&from_type) && Self::is_integer_type(&to_type) {
+            let from_bits = Self::bit_width(&from_type);
+            let to_bits = Self::bit_width(&to_type);
+
+            if from_bits == to_bits {
+                instructions.push(Instruction::Copy {
                     src: value,
                     dst: dst.clone(),
-                }
+                });
+            } else if to_bits > from_bits {
+                let instr = if Self::is_unsigned(&from_type) {
+                    Instruction::ZeroExtend {
+                        src: value,
+                        dst: dst.clone(),
+                    }
+                } else {
+                    Instruction::SignExtend {
+                        src: value,
+                        dst: dst.clone(),
+                    }
+                };
+                instructions.push(instr);
             } else {
-                Instruction::SignExtend {
+                instructions.push(Instruction::Truncate {
                     src: value,
                     dst: dst.clone(),
-                }
-            };
-            instructions.push(instr);
-        } else {
-            instructions.push(Instruction::Truncate {
+                });
+            }
+        } else if Self::is_numeric_type(&from_type) && Self::is_numeric_type(&to_type) {
+            instructions.push(Instruction::Convert {
                 src: value,
                 dst: dst.clone(),
+                from: from_type.clone(),
+                to: to_type.clone(),
             });
+        } else {
+            panic!(
+                "unsupported conversion from {:?} to {:?}",
+                from_type, to_type
+            );
         }
 
         dst
@@ -455,6 +477,7 @@ impl TackyGen {
             Value::Constant(Const::Long(_)) => Type::Long,
             Value::Constant(Const::UInt(_)) => Type::UInt,
             Value::Constant(Const::ULong(_)) => Type::ULong,
+            Value::Constant(Const::Double(_)) => Type::Double,
             Value::Var(name) => self
                 .value_types
                 .get(name)
@@ -484,6 +507,7 @@ impl TackyGen {
         match ty {
             Type::Int | Type::UInt => 32,
             Type::Long | Type::ULong => 64,
+            Type::Double => 64,
             Type::Void => panic!("void type has no bit width"),
         }
     }
@@ -496,17 +520,31 @@ impl TackyGen {
         matches!(ty, Type::Int | Type::UInt | Type::Long | Type::ULong)
     }
 
+    fn is_floating_type(ty: &Type) -> bool {
+        matches!(ty, Type::Double)
+    }
+
+    fn is_numeric_type(ty: &Type) -> bool {
+        Self::is_integer_type(ty) || Self::is_floating_type(ty)
+    }
+
     fn type_rank(ty: &Type) -> usize {
         match ty {
             Type::Int => 0,
             Type::UInt => 1,
             Type::Long => 2,
             Type::ULong => 3,
+
             Type::Void => panic!("void type has no rank"),
+            Type::Double => panic!("double type has no integer rank"),
         }
     }
 
     fn common_numeric_type(lhs: &Type, rhs: &Type) -> Type {
+        if Self::is_floating_type(lhs) || Self::is_floating_type(rhs) {
+            return Type::Double;
+        }
+
         if !Self::is_integer_type(lhs) || !Self::is_integer_type(rhs) {
             panic!("unsupported operand types {:?} and {:?}", lhs, rhs);
         }
@@ -533,6 +571,32 @@ impl TackyGen {
             return constant;
         }
 
+        if matches!(to_type, Type::Double) {
+            let value = match (constant, from_type) {
+                (Const::Double(v), _) => v,
+                (Const::Int(n), _) => n as f64,
+                (Const::Long(n), _) => n as f64,
+                (Const::UInt(n), _) => n as f64,
+                (Const::ULong(n), _) => n as f64,
+            };
+            return Const::Double(value);
+        }
+
+        if matches!(from_type, Type::Double) {
+            let value = match constant {
+                Const::Double(v) => v,
+                _ => panic!("mismatched constant for double conversion"),
+            };
+            return match to_type {
+                Type::Int => Const::Int(value as i64),
+                Type::Long => Const::Long(value as i64),
+                Type::UInt => Const::UInt(value as u64),
+                Type::ULong => Const::ULong(value as u64),
+                Type::Double => unreachable!(),
+                Type::Void => panic!("cannot convert constant to void"),
+            };
+        }
+
         let from_bits = Self::bit_width(from_type);
         let to_bits = Self::bit_width(to_type);
         let from_unsigned = Self::is_unsigned(from_type);
@@ -542,6 +606,7 @@ impl TackyGen {
             Const::UInt(n) => (n as u32) as u128,
             Const::Long(n) => (n as u64) as u128,
             Const::ULong(n) => n as u128,
+            Const::Double(_) => unreachable!("double handled earlier"),
         };
 
         raw &= Self::mask(from_bits);
@@ -570,6 +635,7 @@ impl TackyGen {
                 Const::Long(value)
             }
             Type::ULong => Const::ULong(raw as u64),
+            Type::Double => unreachable!(),
             Type::Void => panic!("cannot convert constant to void"),
         }
     }
@@ -600,11 +666,13 @@ impl TackyGen {
                 else_branch,
             } => {
                 let cond_val = self.gen_expr(condition, instructions);
+                let cond_bool =
+                    self.convert_value(cond_val, condition.r#type.clone(), Type::Int, instructions);
                 let end_label = self.fresh_label("if.end");
                 if let Some(else_branch) = else_branch {
                     let else_label = self.fresh_label("if.else");
                     instructions.push(Instruction::JumpIfZero {
-                        condition: cond_val,
+                        condition: cond_bool.clone(),
                         target: else_label.clone(),
                     });
                     self.gen_stmt(then_branch, instructions);
@@ -614,7 +682,7 @@ impl TackyGen {
                     instructions.push(Instruction::Label(end_label));
                 } else {
                     instructions.push(Instruction::JumpIfZero {
-                        condition: cond_val,
+                        condition: cond_bool,
                         target: end_label.clone(),
                     });
                     self.gen_stmt(then_branch, instructions);
@@ -631,8 +699,10 @@ impl TackyGen {
                 let end_label = self.fresh_label("while.end");
                 instructions.push(Instruction::Label(cond_label.clone()));
                 let cond_val = self.gen_expr(condition, instructions);
+                let cond_bool =
+                    self.convert_value(cond_val, condition.r#type.clone(), Type::Int, instructions);
                 instructions.push(Instruction::JumpIfZero {
-                    condition: cond_val,
+                    condition: cond_bool,
                     target: end_label.clone(),
                 });
                 let context = LoopContext {
@@ -665,8 +735,10 @@ impl TackyGen {
                 self.gen_stmt(body, instructions);
                 instructions.push(Instruction::Label(cond_label.clone()));
                 let cond_val = self.gen_expr(condition, instructions);
+                let cond_bool =
+                    self.convert_value(cond_val, condition.r#type.clone(), Type::Int, instructions);
                 instructions.push(Instruction::JumpIfNotZero {
-                    condition: cond_val,
+                    condition: cond_bool,
                     target: body_label,
                 });
                 self.pop_loop_context(loop_id);
@@ -695,8 +767,10 @@ impl TackyGen {
                 instructions.push(Instruction::Label(cond_label.clone()));
                 if let Some(cond) = condition {
                     let cond_val = self.gen_expr(cond, instructions);
+                    let cond_bool =
+                        self.convert_value(cond_val, cond.r#type.clone(), Type::Int, instructions);
                     instructions.push(Instruction::JumpIfZero {
-                        condition: cond_val,
+                        condition: cond_bool,
                         target: end_label.clone(),
                     });
                 }
@@ -1153,6 +1227,7 @@ impl TackyGen {
             Type::UInt => Value::Constant(Const::UInt(1)),
             Type::Long => Value::Constant(Const::Long(1)),
             Type::ULong => Value::Constant(Const::ULong(1)),
+            Type::Double => Value::Constant(Const::Double(1.0)),
             Type::Void => panic!("cannot increment void"),
         };
         instructions.push(Instruction::Binary {

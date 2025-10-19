@@ -320,6 +320,7 @@ impl SemanticAnalyzer {
                     Const::Long(_) => Type::Long,
                     Const::UInt(_) => Type::UInt,
                     Const::ULong(_) => Type::ULong,
+                    Const::Double(_) => Type::Double,
                 };
                 Expr {
                     kind: ExprKind::Constant(c),
@@ -380,7 +381,7 @@ impl SemanticAnalyzer {
                 }
 
                 let expr = self.analyze_expr(*expr);
-                self.ensure_integer_type(&expr.r#type, "cast operand");
+                self.ensure_castable(&expr.r#type, &target);
                 let ty = target.clone();
                 Expr {
                     kind: ExprKind::Cast(ty.clone(), Box::new(expr)),
@@ -391,10 +392,10 @@ impl SemanticAnalyzer {
                 }
             }
             ExprKind::Neg(expr) => {
-                self.analyze_numeric_unary(*expr, start, end, source, ExprKind::Neg)
+                self.analyze_arithmetic_unary(*expr, start, end, source, ExprKind::Neg)
             }
             ExprKind::BitNot(expr) => {
-                self.analyze_numeric_unary(*expr, start, end, source, ExprKind::BitNot)
+                self.analyze_integer_unary(*expr, start, end, source, ExprKind::BitNot)
             }
             ExprKind::Not(expr) => {
                 let expr = self.analyze_expr(*expr);
@@ -411,9 +412,9 @@ impl SemanticAnalyzer {
                 let cond = self.analyze_expr(*cond);
                 self.ensure_integer_type(&cond.r#type, "conditional condition");
                 let then_expr = self.analyze_expr(*then_expr);
-                self.ensure_integer_type(&then_expr.r#type, "conditional arm");
+                self.ensure_numeric_type(&then_expr.r#type, "conditional arm");
                 let else_expr = self.analyze_expr(*else_expr);
-                self.ensure_integer_type(&else_expr.r#type, "conditional arm");
+                self.ensure_numeric_type(&else_expr.r#type, "conditional arm");
                 let ty = self.numeric_result_type(&then_expr.r#type, &else_expr.r#type);
                 Expr {
                     kind: ExprKind::Conditional(
@@ -428,19 +429,19 @@ impl SemanticAnalyzer {
                 }
             }
             ExprKind::Add(lhs, rhs) => {
-                self.analyze_numeric_binary(*lhs, *rhs, start, end, source, ExprKind::Add)
+                self.analyze_arithmetic_binary(*lhs, *rhs, start, end, source, ExprKind::Add)
             }
             ExprKind::Sub(lhs, rhs) => {
-                self.analyze_numeric_binary(*lhs, *rhs, start, end, source, ExprKind::Sub)
+                self.analyze_arithmetic_binary(*lhs, *rhs, start, end, source, ExprKind::Sub)
             }
             ExprKind::Mul(lhs, rhs) => {
-                self.analyze_numeric_binary(*lhs, *rhs, start, end, source, ExprKind::Mul)
+                self.analyze_arithmetic_binary(*lhs, *rhs, start, end, source, ExprKind::Mul)
             }
             ExprKind::Div(lhs, rhs) => {
-                self.analyze_numeric_binary(*lhs, *rhs, start, end, source, ExprKind::Div)
+                self.analyze_arithmetic_binary(*lhs, *rhs, start, end, source, ExprKind::Div)
             }
             ExprKind::Rem(lhs, rhs) => {
-                self.analyze_numeric_binary(*lhs, *rhs, start, end, source, ExprKind::Rem)
+                self.analyze_integer_binary(*lhs, *rhs, start, end, source, ExprKind::Rem)
             }
             ExprKind::Equal(lhs, rhs) => {
                 self.analyze_comparison(*lhs, *rhs, start, end, source, ExprKind::Equal)
@@ -467,13 +468,13 @@ impl SemanticAnalyzer {
                 self.analyze_logical_binary(*lhs, *rhs, start, end, source, ExprKind::And)
             }
             ExprKind::BitAnd(lhs, rhs) => {
-                self.analyze_numeric_binary(*lhs, *rhs, start, end, source, ExprKind::BitAnd)
+                self.analyze_integer_binary(*lhs, *rhs, start, end, source, ExprKind::BitAnd)
             }
             ExprKind::Xor(lhs, rhs) => {
-                self.analyze_numeric_binary(*lhs, *rhs, start, end, source, ExprKind::Xor)
+                self.analyze_integer_binary(*lhs, *rhs, start, end, source, ExprKind::Xor)
             }
             ExprKind::BitOr(lhs, rhs) => {
-                self.analyze_numeric_binary(*lhs, *rhs, start, end, source, ExprKind::BitOr)
+                self.analyze_integer_binary(*lhs, *rhs, start, end, source, ExprKind::BitOr)
             }
             ExprKind::LeftShift(lhs, rhs) => {
                 let lhs = self.analyze_expr(*lhs);
@@ -524,7 +525,7 @@ impl SemanticAnalyzer {
                 if !matches!(expr.kind, ExprKind::Var(_)) {
                     panic!("increment target must be a variable");
                 }
-                self.ensure_integer_type(&expr.r#type, "pre-increment operand");
+                self.ensure_numeric_type(&expr.r#type, "pre-increment operand");
                 let ty = expr.r#type.clone();
                 Expr {
                     kind: ExprKind::PreIncrement(Box::new(expr)),
@@ -539,7 +540,7 @@ impl SemanticAnalyzer {
                 if !matches!(expr.kind, ExprKind::Var(_)) {
                     panic!("decrement target must be a variable");
                 }
-                self.ensure_integer_type(&expr.r#type, "pre-decrement operand");
+                self.ensure_numeric_type(&expr.r#type, "pre-decrement operand");
                 let ty = expr.r#type.clone();
                 Expr {
                     kind: ExprKind::PreDecrement(Box::new(expr)),
@@ -554,7 +555,7 @@ impl SemanticAnalyzer {
                 if !matches!(expr.kind, ExprKind::Var(_)) {
                     panic!("increment target must be a variable");
                 }
-                self.ensure_integer_type(&expr.r#type, "post-increment operand");
+                self.ensure_numeric_type(&expr.r#type, "post-increment operand");
                 let ty = expr.r#type.clone();
                 Expr {
                     kind: ExprKind::PostIncrement(Box::new(expr)),
@@ -569,7 +570,7 @@ impl SemanticAnalyzer {
                 if !matches!(expr.kind, ExprKind::Var(_)) {
                     panic!("decrement target must be a variable");
                 }
-                self.ensure_integer_type(&expr.r#type, "post-decrement operand");
+                self.ensure_numeric_type(&expr.r#type, "post-decrement operand");
                 let ty = expr.r#type.clone();
                 Expr {
                     kind: ExprKind::PostDecrement(Box::new(expr)),
@@ -589,7 +590,7 @@ impl SemanticAnalyzer {
         }
     }
 
-    fn analyze_numeric_unary<F>(
+    fn analyze_integer_unary<F>(
         &mut self,
         expr: Expr,
         start: usize,
@@ -612,7 +613,30 @@ impl SemanticAnalyzer {
         }
     }
 
-    fn analyze_numeric_binary<F>(
+    fn analyze_arithmetic_unary<F>(
+        &mut self,
+        expr: Expr,
+        start: usize,
+        end: usize,
+        source: String,
+        constructor: F,
+    ) -> Expr
+    where
+        F: FnOnce(Box<Expr>) -> ExprKind,
+    {
+        let expr = self.analyze_expr(expr);
+        self.ensure_numeric_type(&expr.r#type, "unary operator");
+        let ty = expr.r#type.clone();
+        Expr {
+            kind: constructor(Box::new(expr)),
+            start,
+            end,
+            source,
+            r#type: ty,
+        }
+    }
+
+    fn analyze_integer_binary<F>(
         &mut self,
         lhs: Expr,
         rhs: Expr,
@@ -638,6 +662,32 @@ impl SemanticAnalyzer {
         }
     }
 
+    fn analyze_arithmetic_binary<F>(
+        &mut self,
+        lhs: Expr,
+        rhs: Expr,
+        start: usize,
+        end: usize,
+        source: String,
+        constructor: F,
+    ) -> Expr
+    where
+        F: FnOnce(Box<Expr>, Box<Expr>) -> ExprKind,
+    {
+        let lhs = self.analyze_expr(lhs);
+        let rhs = self.analyze_expr(rhs);
+        self.ensure_numeric_type(&lhs.r#type, "binary operand");
+        self.ensure_numeric_type(&rhs.r#type, "binary operand");
+        let ty = self.numeric_result_type(&lhs.r#type, &rhs.r#type);
+        Expr {
+            kind: constructor(Box::new(lhs), Box::new(rhs)),
+            start,
+            end,
+            source,
+            r#type: ty,
+        }
+    }
+
     fn analyze_comparison<F>(
         &mut self,
         lhs: Expr,
@@ -652,8 +702,8 @@ impl SemanticAnalyzer {
     {
         let lhs = self.analyze_expr(lhs);
         let rhs = self.analyze_expr(rhs);
-        self.ensure_integer_type(&lhs.r#type, "comparison operand");
-        self.ensure_integer_type(&rhs.r#type, "comparison operand");
+        self.ensure_numeric_type(&lhs.r#type, "comparison operand");
+        self.ensure_numeric_type(&rhs.r#type, "comparison operand");
         Expr {
             kind: constructor(Box::new(lhs), Box::new(rhs)),
             start,
@@ -689,11 +739,15 @@ impl SemanticAnalyzer {
     }
 
     fn numeric_result_type(&self, lhs: &Type, rhs: &Type) -> Type {
-        if !Self::is_integer_type(lhs) || !Self::is_integer_type(rhs) {
+        if !Self::is_numeric_type(lhs) || !Self::is_numeric_type(rhs) {
             panic!(
                 "unsupported operand types {:?} and {:?} in numeric expression",
                 lhs, rhs
             );
+        }
+
+        if Self::is_floating_type(lhs) || Self::is_floating_type(rhs) {
+            return Type::Double;
         }
 
         if Self::type_rank(lhs) >= Self::type_rank(rhs) {
@@ -709,23 +763,44 @@ impl SemanticAnalyzer {
         }
     }
 
+    fn ensure_numeric_type(&self, ty: &Type, context: &str) {
+        if !Self::is_numeric_type(ty) {
+            panic!("{context} requires numeric type, found {:?}", ty);
+        }
+    }
+
     fn ensure_assignable(&self, target: &Type, value: &Type, context: &str) {
         if target == value {
             return;
         }
 
-        if Self::is_integer_type(target) && Self::is_integer_type(value) {
+        if Self::is_numeric_type(target) && Self::is_numeric_type(value) {
             return;
         }
 
         panic!(
-            "{context} requires compatible integer types ({:?} <- {:?})",
+            "{context} requires compatible numeric types ({:?} <- {:?})",
             target, value
         );
     }
 
     fn is_integer_type(ty: &Type) -> bool {
         matches!(ty, Type::Int | Type::UInt | Type::Long | Type::ULong)
+    }
+
+    fn is_floating_type(ty: &Type) -> bool {
+        matches!(ty, Type::Double)
+    }
+
+    fn is_numeric_type(ty: &Type) -> bool {
+        Self::is_integer_type(ty) || Self::is_floating_type(ty)
+    }
+
+    fn ensure_castable(&self, from: &Type, to: &Type) {
+        if Self::is_numeric_type(from) && Self::is_numeric_type(to) {
+            return;
+        }
+        panic!("unsupported cast {:?} -> {:?}", from, to);
     }
 
     fn type_rank(ty: &Type) -> usize {
@@ -735,6 +810,7 @@ impl SemanticAnalyzer {
             Type::Long => 2,
             Type::ULong => 3,
             Type::Void => panic!("void type has no integer rank"),
+            Type::Double => panic!("double type has no integer rank"),
         }
     }
 

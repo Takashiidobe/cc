@@ -137,6 +137,7 @@ pub enum Type {
     Long,
     UInt,
     ULong,
+    Double,
     Void,
 }
 
@@ -146,6 +147,7 @@ pub enum Const {
     Long(i64),
     UInt(u64),
     ULong(u64),
+    Double(f64),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -171,9 +173,11 @@ pub struct Program(pub Vec<Decl>);
 #[derive(Debug, Clone, Default)]
 struct TypeSpecifierState {
     saw_void: bool,
+    saw_double: bool,
     saw_long: bool,
     saw_int: bool,
     signedness: Option<bool>, // Some(true) for signed, Some(false) for unsigned
+    is_const: bool,
 }
 
 impl TypeSpecifierState {
@@ -183,14 +187,23 @@ impl TypeSpecifierState {
                 if self.saw_void {
                     panic!("duplicate 'void' specifier in declaration");
                 }
-                if self.saw_long || self.saw_int || self.signedness.is_some() {
+                if self.saw_long || self.saw_int || self.signedness.is_some() || self.saw_double {
                     panic!("'void' cannot be combined with other type specifiers");
                 }
                 self.saw_void = true;
             }
+            TokenKind::Double => {
+                if self.saw_double {
+                    panic!("duplicate 'double' specifier in declaration");
+                }
+                if self.saw_void || self.saw_long || self.saw_int || self.signedness.is_some() {
+                    panic!("'double' cannot be combined with other type specifiers");
+                }
+                self.saw_double = true;
+            }
             TokenKind::Long => {
-                if self.saw_void {
-                    panic!("'long' cannot be combined with 'void'");
+                if self.saw_void || self.saw_double {
+                    panic!("'long' cannot be combined with this type specifier");
                 }
                 if self.saw_long {
                     panic!("duplicate 'long' specifier in declaration");
@@ -198,8 +211,8 @@ impl TypeSpecifierState {
                 self.saw_long = true;
             }
             TokenKind::Int => {
-                if self.saw_void {
-                    panic!("'int' cannot be combined with 'void'");
+                if self.saw_void || self.saw_double {
+                    panic!("'int' cannot be combined with this type specifier");
                 }
                 if self.saw_int {
                     panic!("duplicate 'int' specifier in declaration");
@@ -207,6 +220,9 @@ impl TypeSpecifierState {
                 self.saw_int = true;
             }
             TokenKind::Signed => {
+                if self.saw_double {
+                    panic!("'signed' cannot be combined with 'double'");
+                }
                 if self.signedness == Some(false) {
                     panic!("conflicting 'signed' and 'unsigned' specifiers");
                 }
@@ -216,6 +232,9 @@ impl TypeSpecifierState {
                 self.signedness = Some(true);
             }
             TokenKind::Unsigned => {
+                if self.saw_double {
+                    panic!("'unsigned' cannot be combined with 'double'");
+                }
                 if self.signedness == Some(true) {
                     panic!("conflicting 'signed' and 'unsigned' specifiers");
                 }
@@ -224,12 +243,22 @@ impl TypeSpecifierState {
                 }
                 self.signedness = Some(false);
             }
+            TokenKind::Const => {
+                if self.is_const {
+                    panic!("duplicate 'const' qualifier in declaration");
+                }
+                self.is_const = true;
+            }
             _ => panic!("unsupported type specifier"),
         }
     }
 
     fn has_type_specifier(&self) -> bool {
-        self.saw_void || self.saw_long || self.saw_int || self.signedness.is_some()
+        self.saw_void
+            || self.saw_double
+            || self.saw_long
+            || self.saw_int
+            || self.signedness.is_some()
     }
 
     fn resolve(&self) -> Type {
@@ -239,6 +268,10 @@ impl TypeSpecifierState {
 
         if self.saw_void {
             return Type::Void;
+        }
+
+        if self.saw_double {
+            return Type::Double;
         }
 
         let is_unsigned = matches!(self.signedness, Some(false));
@@ -304,7 +337,9 @@ impl Parser {
                 | TokenKind::Long
                 | TokenKind::Void
                 | TokenKind::Signed
-                | TokenKind::Unsigned => {
+                | TokenKind::Unsigned
+                | TokenKind::Double
+                | TokenKind::Const => {
                     self.advance();
                     state.add(&kind);
                     consumed_any = true;
@@ -339,11 +374,13 @@ impl Parser {
             self.tokens[self.pos].kind,
             TokenKind::Int
                 | TokenKind::Long
+                | TokenKind::Double
                 | TokenKind::Unsigned
                 | TokenKind::Signed
                 | TokenKind::Void
                 | TokenKind::Static
                 | TokenKind::Extern
+                | TokenKind::Const
         )
     }
 
@@ -419,7 +456,7 @@ impl Parser {
     ) -> Decl {
         if !matches!(
             return_type,
-            Type::Int | Type::Void | Type::Long | Type::UInt | Type::ULong
+            Type::Int | Type::Void | Type::Long | Type::UInt | Type::ULong | Type::Double
         ) {
             panic!("Unsupported return type in function declaration");
         }
@@ -1391,6 +1428,16 @@ impl Parser {
                     r#type: Type::ULong,
                 }
             }
+            TokenKind::Float(n) => {
+                self.advance();
+                Expr {
+                    kind: ExprKind::Constant(Const::Double(n)),
+                    start,
+                    end,
+                    source,
+                    r#type: Type::Double,
+                }
+            }
             TokenKind::Identifier(name) => {
                 self.advance();
                 Expr {
@@ -1427,7 +1474,9 @@ impl Parser {
                 | TokenKind::Long
                 | TokenKind::Void
                 | TokenKind::Signed
-                | TokenKind::Unsigned => {
+                | TokenKind::Unsigned
+                | TokenKind::Double
+                | TokenKind::Const => {
                     state.add(kind);
                     consumed_any = true;
                     idx += 1;

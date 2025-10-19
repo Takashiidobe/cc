@@ -139,6 +139,9 @@ pub enum TokenKind {
     #[token("int")]
     Int,
 
+    #[token("double")]
+    Double,
+
     #[token("long")]
     Long,
 
@@ -147,6 +150,9 @@ pub enum TokenKind {
 
     #[token("signed")]
     Signed,
+
+    #[token("const")]
+    Const,
 
     #[token("static")]
     Static,
@@ -205,7 +211,15 @@ pub enum TokenKind {
     )]
     UnsignedLongInteger(u64),
 
-    #[regex(r"[0-9]+\.[0-9]+", |lex| lex.slice().parse::<f64>().unwrap(), priority = 4)]
+    #[regex(
+        r"([0-9]*\.[0-9]+([Ee][+-]?[0-9]+)?|[0-9]+\.([Ee][+-]?[0-9]+)?|[0-9]+[Ee][+-]?[0-9]+)",
+        |lex| {
+            lex.slice()
+                .parse::<f64>()
+                .unwrap_or_else(|_| panic!("invalid floating literal: {}", lex.slice()))
+        },
+        priority = 4
+    )]
     Float(f64),
 
     #[regex(r#"[a-zA-Z_]\w*"#, |lex| lex.slice().to_owned(), priority = 2)]
