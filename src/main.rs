@@ -55,7 +55,7 @@ fn main() -> anyhow::Result<(), Error> {
             eprintln!("Labeled AST: {:?}", &labeled_ast);
         }
         let tacky = TackyGen::new(labeled_ast);
-        let tacky_program = tacky.codegen();
+        let tacky_program = tacky.codegen()?;
         let mut codegen = Codegen::new(std::io::stdout());
         codegen.lower(&tacky_program)?;
     }
