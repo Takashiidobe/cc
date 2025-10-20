@@ -1,3 +1,5 @@
+use thiserror::Error;
+
 use crate::parse::{Decl, DeclKind, FunctionDecl, Program, Stmt, StmtKind};
 
 #[derive(Default)]
@@ -6,21 +8,29 @@ pub struct LoopLabeler {
     loop_stack: Vec<usize>,
 }
 
+#[derive(Debug, Error)]
+pub enum LoopLabelerError {
+    #[error("Break not in loop")]
+    BreakNotInLoop,
+    #[error("Continue not in loop")]
+    ContinueNotInLoop,
+}
+
 impl LoopLabeler {
     pub fn new() -> Self {
         Self::default()
     }
 
-    pub fn label_program(mut self, program: Program) -> Program {
-        let decls = program
+    pub fn label_program(mut self, program: Program) -> Result<Program, LoopLabelerError> {
+        let decls: Result<Vec<_>, _> = program
             .0
             .into_iter()
             .map(|decl| self.label_decl(decl))
             .collect();
-        Program(decls)
+        Ok(Program(decls?))
     }
 
-    fn label_decl(&mut self, decl: Decl) -> Decl {
+    fn label_decl(&mut self, decl: Decl) -> Result<Decl, LoopLabelerError> {
         let Decl {
             kind,
             start,
@@ -29,19 +39,19 @@ impl LoopLabeler {
         } = decl;
 
         let kind = match kind {
-            DeclKind::Function(func) => DeclKind::Function(self.label_function(func)),
+            DeclKind::Function(func) => DeclKind::Function(self.label_function(func)?),
             DeclKind::Variable(var) => DeclKind::Variable(var),
         };
 
-        Decl {
+        Ok(Decl {
             kind,
             start,
             end,
             source,
-        }
+        })
     }
 
-    fn label_function(&mut self, decl: FunctionDecl) -> FunctionDecl {
+    fn label_function(&mut self, decl: FunctionDecl) -> Result<FunctionDecl, LoopLabelerError> {
         let FunctionDecl {
             name,
             params,
@@ -50,23 +60,25 @@ impl LoopLabeler {
             return_type,
         } = decl;
 
-        let body = body.map(|stmts| {
-            stmts
-                .into_iter()
-                .map(|stmt| self.label_stmt(stmt))
-                .collect()
-        });
+        let body: Option<Vec<Stmt>> = body
+            .map(|stmts| {
+                stmts
+                    .into_iter()
+                    .map(|s| self.label_stmt(s))
+                    .collect::<Result<Vec<_>, _>>()
+            })
+            .transpose()?;
 
-        FunctionDecl {
+        Ok(FunctionDecl {
             name,
             params,
             body,
             storage_class,
             return_type,
-        }
+        })
     }
 
-    fn label_stmt(&mut self, stmt: Stmt) -> Stmt {
+    fn label_stmt(&mut self, stmt: Stmt) -> Result<Stmt, LoopLabelerError> {
         let Stmt {
             kind,
             start,
@@ -78,29 +90,37 @@ impl LoopLabeler {
         let kind = match kind {
             StmtKind::Return(expr) => StmtKind::Return(expr),
             StmtKind::Expr(expr) => StmtKind::Expr(expr),
-            StmtKind::Compound(stmts) => StmtKind::Compound(
-                stmts
+            StmtKind::Compound(stmts) => {
+                let stmts: Result<Vec<_>, _> = stmts
                     .into_iter()
                     .map(|stmt| self.label_stmt(stmt))
-                    .collect(),
-            ),
+                    .collect();
+                StmtKind::Compound(stmts?)
+            }
             StmtKind::Declaration(decl) => StmtKind::Declaration(decl),
             StmtKind::Null => StmtKind::Null,
             StmtKind::If {
                 condition,
                 then_branch,
                 else_branch,
-            } => StmtKind::If {
-                condition,
-                then_branch: Box::new(self.label_stmt(*then_branch)),
-                else_branch: else_branch.map(|stmt| Box::new(self.label_stmt(*stmt))),
-            },
+            } => {
+                let else_branch = match else_branch {
+                    Some(s) => Some(Box::new(self.label_stmt(*s)?)),
+                    None => None,
+                };
+
+                StmtKind::If {
+                    condition,
+                    then_branch: Box::new(self.label_stmt(*then_branch)?),
+                    else_branch,
+                }
+            }
             StmtKind::While {
                 condition,
                 body,
                 loop_id: _,
             } => {
-                let (loop_id, body) = self.loop_body(body);
+                let (loop_id, body) = self.loop_body(body)?;
                 StmtKind::While {
                     condition,
                     body,
@@ -112,7 +132,7 @@ impl LoopLabeler {
                 condition,
                 loop_id: _,
             } => {
-                let (loop_id, body) = self.loop_body(body);
+                let (loop_id, body) = self.loop_body(body)?;
                 StmtKind::DoWhile {
                     body,
                     condition,
@@ -126,7 +146,7 @@ impl LoopLabeler {
                 body,
                 loop_id: _,
             } => {
-                let (loop_id, body) = self.loop_body(body);
+                let (loop_id, body) = self.loop_body(body)?;
                 StmtKind::For {
                     init,
                     condition,
@@ -139,7 +159,7 @@ impl LoopLabeler {
                 let loop_id = *self
                     .loop_stack
                     .last()
-                    .expect("break statement not within a loop");
+                    .ok_or(LoopLabelerError::BreakNotInLoop)?;
                 StmtKind::Break {
                     loop_id: Some(loop_id),
                 }
@@ -148,28 +168,31 @@ impl LoopLabeler {
                 let loop_id = *self
                     .loop_stack
                     .last()
-                    .expect("continue statement not within a loop");
+                    .ok_or(LoopLabelerError::ContinueNotInLoop)?;
                 StmtKind::Continue {
                     loop_id: Some(loop_id),
                 }
             }
         };
 
-        Stmt {
+        Ok(Stmt {
             kind,
             start,
             end,
             source,
             r#type,
-        }
+        })
     }
 
-    fn loop_body(&mut self, body: Box<Stmt>) -> (Option<usize>, Box<Stmt>) {
+    fn loop_body(
+        &mut self,
+        body: Box<Stmt>,
+    ) -> Result<(Option<usize>, Box<Stmt>), LoopLabelerError> {
         let loop_id = self.next_loop_id();
         self.loop_stack.push(loop_id);
-        let body = Box::new(self.label_stmt(*body));
+        let body = Box::new(self.label_stmt(*body)?);
         self.loop_stack.pop();
-        (Some(loop_id), body)
+        Ok((Some(loop_id), body))
     }
 
     fn next_loop_id(&mut self) -> usize {

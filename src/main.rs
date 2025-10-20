@@ -50,7 +50,7 @@ fn main() -> anyhow::Result<(), Error> {
             eprintln!("Analyzed AST: {:?}", &analyzed_ast);
         }
 
-        let labeled_ast = LoopLabeler::new().label_program(analyzed_ast);
+        let labeled_ast = LoopLabeler::new().label_program(analyzed_ast)?;
         if args.verbose {
             eprintln!("Labeled AST: {:?}", &labeled_ast);
         }
