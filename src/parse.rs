@@ -1,9 +1,97 @@
+use thiserror::Error;
+
 use crate::tokenize::{Token, TokenKind};
 use std::convert::TryFrom;
 use std::{fmt, mem};
 
 pub type Expr = Node<ExprKind>;
 pub type Stmt = Node<StmtKind>;
+
+#[derive(Error, Debug, Clone)]
+pub enum ParserError {
+    #[error("unexpected end of input{0}")]
+    UnexpectedEof(&'static str),
+
+    #[error("expected token {0:?}, found {1:?}")]
+    ExpectedToken(TokenKind, Option<TokenKind>),
+
+    #[error("not at end of program (next token: {0:?})")]
+    NotAtEnd(Option<TokenKind>),
+
+    #[error("storage class specifiers are not allowed here")]
+    StorageNotAllowedHere,
+
+    #[error("multiple storage class specifiers in declaration")]
+    MultipleStorageClasses,
+
+    #[error("unsupported type specifier {0:?}")]
+    UnsupportedTypeSpecifier(TokenKind),
+
+    #[error("duplicate type specifier '{0}'")]
+    DuplicateTypeSpecifier(&'static str),
+
+    #[error("conflicting type specifiers '{0}' and '{1}'")]
+    ConflictingTypeSpecifiers(&'static str, &'static str),
+
+    #[error("'void' cannot be combined with other type specifiers")]
+    VoidCannotCombine,
+
+    #[error("'double' cannot be combined with other type specifiers")]
+    DoubleCannotCombine,
+
+    #[error("declaration missing type specifier")]
+    MissingTypeSpecifier,
+
+    #[error("expected declaration specifiers")]
+    ExpectedDeclSpecifiers,
+
+    #[error("array size must be non-negative")]
+    NegativeArraySize,
+
+    #[error("array size does not fit in usize ({0})")]
+    ArraySizeTooLarge(i128),
+
+    #[error("expected constant array size, found {0:?}")]
+    ExpectedConstArraySize(TokenKind),
+
+    #[error("'void' parameter must be the only parameter")]
+    VoidOnlyParameter,
+
+    #[error("variable declared with void type")]
+    VariableWithVoidType,
+
+    #[error("function declarations are not allowed in block scope")]
+    FunctionDeclInBlockScope,
+
+    #[error("variable declared with function type")]
+    VariableWithFunctionType,
+
+    #[error("invalid function call target: {0:?}")]
+    InvalidFunctionCallTarget(ExprKind),
+
+    #[error("unsupported compound assignment token: {0:?}")]
+    UnsupportedCompoundAssign(TokenKind),
+
+    #[error("unsupported cast target: void")]
+    UnsupportedCastTargetVoid,
+
+    #[error("expected identifier or '(' in declarator, found {0:?}")]
+    ExpectedIdentOrParen(TokenKind),
+
+    #[error("unexpected token while parsing (found {0:?})")]
+    UnexpectedToken(TokenKind),
+
+    #[error("Expected primary expression, found {0:?}")]
+    ExpectedPrimary(TokenKind),
+
+    #[error("internal: token stream moved beyond end")]
+    CursorPastEnd,
+}
+
+type PResult<T> = Result<T, ParserError>;
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Program(pub Vec<Decl>);
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum StorageClass {
@@ -210,9 +298,6 @@ pub struct Parser {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct Program(pub Vec<Decl>);
-
-#[derive(Debug, Clone, PartialEq)]
 struct ParsedDeclarator {
     name: String,
     type_expr: TypeExpr,
@@ -297,76 +382,83 @@ struct TypeSpecifierState {
 }
 
 impl TypeSpecifierState {
-    fn add(&mut self, kind: &TokenKind) {
+    fn add(&mut self, kind: &TokenKind) -> PResult<()> {
         match kind {
             TokenKind::Void => {
                 if self.saw_void {
-                    panic!("duplicate 'void' specifier in declaration");
+                    return Err(ParserError::DuplicateTypeSpecifier("void"));
                 }
                 if self.saw_long || self.saw_int || self.signedness.is_some() || self.saw_double {
-                    panic!("'void' cannot be combined with other type specifiers");
+                    return Err(ParserError::VoidCannotCombine);
                 }
                 self.saw_void = true;
             }
             TokenKind::Double => {
                 if self.saw_double {
-                    panic!("duplicate 'double' specifier in declaration");
+                    return Err(ParserError::DuplicateTypeSpecifier("double"));
                 }
                 if self.saw_void || self.saw_long || self.saw_int || self.signedness.is_some() {
-                    panic!("'double' cannot be combined with other type specifiers");
+                    return Err(ParserError::DoubleCannotCombine);
                 }
                 self.saw_double = true;
             }
             TokenKind::Long => {
                 if self.saw_void || self.saw_double {
-                    panic!("'long' cannot be combined with this type specifier");
+                    return Err(ParserError::ConflictingTypeSpecifiers(
+                        "long",
+                        "void/double",
+                    ));
                 }
                 self.saw_long = true;
             }
             TokenKind::Int => {
                 if self.saw_void || self.saw_double {
-                    panic!("'int' cannot be combined with this type specifier");
+                    return Err(ParserError::ConflictingTypeSpecifiers("int", "void/double"));
                 }
                 if self.saw_int {
-                    panic!("duplicate 'int' specifier in declaration");
+                    return Err(ParserError::DuplicateTypeSpecifier("int"));
                 }
                 self.saw_int = true;
             }
             TokenKind::Char => {
                 if self.saw_void || self.saw_double || self.saw_long || self.saw_int {
-                    panic!("'char' cannot be combined with this type specifier");
+                    return Err(ParserError::ConflictingTypeSpecifiers(
+                        "char",
+                        "void/double/long/int",
+                    ));
                 }
                 if self.saw_char {
-                    panic!("duplicate 'char' specifier in declaration");
+                    return Err(ParserError::DuplicateTypeSpecifier("char"));
                 }
                 self.saw_char = true;
             }
             TokenKind::Signed => {
                 if self.saw_double {
-                    panic!("'signed' cannot be combined with 'double'");
+                    return Err(ParserError::ConflictingTypeSpecifiers("signed", "double"));
                 }
                 if self.signedness == Some(false) {
-                    panic!("conflicting 'signed' and 'unsigned' specifiers");
+                    return Err(ParserError::ConflictingTypeSpecifiers("signed", "unsigned"));
                 }
                 self.signedness = Some(true);
             }
             TokenKind::Unsigned => {
                 if self.saw_double {
-                    panic!("'unsigned' cannot be combined with 'double'");
+                    return Err(ParserError::ConflictingTypeSpecifiers("unsigned", "double"));
                 }
                 if self.signedness == Some(true) {
-                    panic!("conflicting 'signed' and 'unsigned' specifiers");
+                    return Err(ParserError::ConflictingTypeSpecifiers("unsigned", "signed"));
                 }
                 self.signedness = Some(false);
             }
             TokenKind::Const => {
                 if self.is_const {
-                    panic!("duplicate 'const' qualifier in declaration");
+                    return Err(ParserError::DuplicateTypeSpecifier("const"));
                 }
                 self.is_const = true;
             }
-            _ => panic!("unsupported type specifier"),
+            other => return Err(ParserError::UnsupportedTypeSpecifier(other.clone())),
         }
+        Ok(())
     }
 
     fn has_type_specifier(&self) -> bool {
@@ -378,35 +470,37 @@ impl TypeSpecifierState {
             || self.signedness.is_some()
     }
 
-    fn resolve(&self) -> Type {
+    fn resolve(&self) -> PResult<Type> {
         if !self.has_type_specifier() {
-            panic!("declaration missing type specifier");
+            return Err(ParserError::MissingTypeSpecifier);
         }
 
         if self.saw_void {
-            return Type::Void;
+            return Ok(Type::Void);
         }
 
         if self.saw_double {
-            return Type::Double;
+            return Ok(Type::Double);
         }
 
         if self.saw_char {
-            return match self.signedness {
+            return Ok(match self.signedness {
                 Some(true) => Type::SChar,
                 Some(false) => Type::UChar,
                 None => Type::Char,
-            };
+            });
         }
 
         let is_unsigned = matches!(self.signedness, Some(false));
-        if self.saw_long {
+        let ty = if self.saw_long {
             if is_unsigned { Type::ULong } else { Type::Long }
         } else if is_unsigned {
             Type::UInt
         } else {
             Type::Int
-        }
+        };
+
+        Ok(ty)
     }
 }
 
@@ -420,56 +514,69 @@ impl Parser {
         }
     }
 
-    fn parse_specifiers(&mut self) -> (Type, Option<StorageClass>) {
+    pub fn parse(&mut self) -> PResult<Program> {
+        let mut decls = Vec::new();
+        while self.pos < self.tokens.len() {
+            decls.push(self.declaration()?);
+        }
+        self.ensure_done()?;
+        Ok(Program(decls))
+    }
+
+    fn parse_specifiers(&mut self) -> PResult<(Type, Option<StorageClass>)> {
         self.parse_specifiers_internal(true)
     }
 
-    fn parse_type_specifiers(&mut self) -> Type {
-        let (ty, storage) = self.parse_specifiers_internal(false);
+    fn parse_type_specifiers(&mut self) -> PResult<Type> {
+        let (ty, storage) = self.parse_specifiers_internal(false)?;
         debug_assert!(storage.is_none());
-        ty
+        Ok(ty)
     }
 
-    fn parse_specifiers_internal(&mut self, allow_storage: bool) -> (Type, Option<StorageClass>) {
+    fn parse_specifiers_internal(
+        &mut self,
+        allow_storage: bool,
+    ) -> PResult<(Type, Option<StorageClass>)> {
         let mut storage: Option<StorageClass> = None;
         let mut state = TypeSpecifierState::default();
         let mut consumed_any = false;
 
         while self.pos < self.tokens.len() {
-            let kind = self.peek().kind.clone();
-            match kind {
-                TokenKind::Static => {
+            let kind = self.peek_kind();
+            match kind.clone() {
+                Some(TokenKind::Static) => {
                     if !allow_storage {
-                        panic!("storage class specifiers are not allowed here");
+                        return Err(ParserError::StorageNotAllowedHere);
                     }
                     if storage.is_some() {
-                        panic!("multiple storage class specifiers in declaration");
+                        return Err(ParserError::MultipleStorageClasses);
                     }
-                    self.advance();
+                    self.advance()?;
                     storage = Some(StorageClass::Static);
                     consumed_any = true;
                 }
-                TokenKind::Extern => {
+                Some(TokenKind::Extern) => {
                     if !allow_storage {
-                        panic!("storage class specifiers are not allowed here");
+                        return Err(ParserError::StorageNotAllowedHere);
                     }
                     if storage.is_some() {
-                        panic!("multiple storage class specifiers in declaration");
+                        return Err(ParserError::MultipleStorageClasses);
                     }
-                    self.advance();
+                    self.advance()?;
                     storage = Some(StorageClass::Extern);
                     consumed_any = true;
                 }
-                TokenKind::Int
-                | TokenKind::Long
-                | TokenKind::Void
-                | TokenKind::Signed
-                | TokenKind::Unsigned
-                | TokenKind::Double
-                | TokenKind::Char
-                | TokenKind::Const => {
-                    self.advance();
-                    state.add(&kind);
+                Some(TokenKind::Int)
+                | Some(TokenKind::Long)
+                | Some(TokenKind::Void)
+                | Some(TokenKind::Signed)
+                | Some(TokenKind::Unsigned)
+                | Some(TokenKind::Double)
+                | Some(TokenKind::Char)
+                | Some(TokenKind::Const) => {
+                    let k = kind.unwrap();
+                    self.advance()?;
+                    state.add(&k)?;
                     consumed_any = true;
                 }
                 _ => break,
@@ -477,57 +584,54 @@ impl Parser {
         }
 
         if !consumed_any {
-            panic!("expected declaration specifiers");
+            return Err(ParserError::ExpectedDeclSpecifiers);
         }
 
-        let ty = state.resolve();
-        (ty, storage)
+        let ty = state.resolve()?;
+        Ok((ty, storage))
     }
 
-    fn parse_declarator(&mut self) -> ParsedDeclarator {
-        if self.peek().kind == TokenKind::Star {
-            self.advance();
-            let mut inner = self.parse_declarator();
+    fn parse_declarator(&mut self) -> PResult<ParsedDeclarator> {
+        if matches!(self.peek_kind(), Some(TokenKind::Star)) {
+            self.advance()?;
+            let mut inner = self.parse_declarator()?;
             let current = mem::replace(&mut inner.type_expr, TypeExpr::Base);
             inner.type_expr = current.add_pointer();
-            inner
+            Ok(inner)
         } else {
             self.parse_direct_declarator()
         }
     }
 
-    fn parse_direct_declarator(&mut self) -> ParsedDeclarator {
-        let mut declarator = if let TokenKind::Identifier(name) = self.peek().kind.clone() {
-            self.advance();
+    fn parse_direct_declarator(&mut self) -> PResult<ParsedDeclarator> {
+        let mut declarator = if let Some(TokenKind::Identifier(name)) = self.peek_kind() {
+            self.advance()?;
             ParsedDeclarator {
                 name,
                 type_expr: TypeExpr::Base,
             }
-        } else if self.peek().kind == TokenKind::LParen {
-            self.advance();
-            let declarator = self.parse_declarator();
-            self.skip(&TokenKind::RParen);
+        } else if matches!(self.peek_kind(), Some(TokenKind::LParen)) {
+            self.advance()?;
+            let declarator = self.parse_declarator()?;
+            self.expect(&TokenKind::RParen)?;
             declarator
         } else {
-            panic!(
-                "expected identifier or '(' in declarator, found {:?}",
-                self.peek()
-            );
+            return Err(ParserError::ExpectedIdentOrParen(self.peek_kind().unwrap()));
         };
 
         while self.pos < self.tokens.len() {
-            match self.peek().kind {
-                TokenKind::LParen => {
-                    self.advance();
-                    let params = self.parse_parameter_list();
-                    self.skip(&TokenKind::RParen);
+            match self.peek_kind() {
+                Some(TokenKind::LParen) => {
+                    self.advance()?;
+                    let params = self.parse_parameter_list()?;
+                    self.expect(&TokenKind::RParen)?;
                     let current = mem::replace(&mut declarator.type_expr, TypeExpr::Base);
                     declarator.type_expr = current.add_function(params);
                 }
-                TokenKind::LBracket => {
-                    self.advance();
-                    let size = self.parse_array_size();
-                    self.skip(&TokenKind::RBracket);
+                Some(TokenKind::LBracket) => {
+                    self.advance()?;
+                    let size = self.parse_array_size()?;
+                    self.expect(&TokenKind::RBracket)?;
                     let current = mem::replace(&mut declarator.type_expr, TypeExpr::Base);
                     declarator.type_expr = current.add_array(size);
                 }
@@ -535,146 +639,76 @@ impl Parser {
             }
         }
 
-        declarator
+        Ok(declarator)
     }
 
-    fn parse_array_size(&mut self) -> usize {
-        let token = self.peek();
-        match token.kind.clone() {
-            TokenKind::Integer(n) | TokenKind::LongInteger(n) => {
+    fn parse_array_size(&mut self) -> PResult<usize> {
+        match self.peek_kind() {
+            Some(TokenKind::Integer(n)) | Some(TokenKind::LongInteger(n)) => {
                 if n < 0 {
-                    panic!("array size must be non-negative");
+                    return Err(ParserError::NegativeArraySize);
                 }
-                self.advance();
-                usize::try_from(n).expect("array size does not fit in usize")
+                self.advance()?;
+                usize::try_from(n).map_err(|_| ParserError::ArraySizeTooLarge(n as i128))
             }
-            TokenKind::UnsignedInteger(n) | TokenKind::UnsignedLongInteger(n) => {
-                self.advance();
-                usize::try_from(n).expect("array size does not fit in usize")
+            Some(TokenKind::UnsignedInteger(n)) | Some(TokenKind::UnsignedLongInteger(n)) => {
+                self.advance()?;
+                usize::try_from(n).map_err(|_| ParserError::ArraySizeTooLarge(n as i128))
             }
-            kind => panic!("expected constant array size, found {kind:?}"),
+            other => Err(ParserError::ExpectedConstArraySize(other.unwrap())),
         }
     }
 
-    fn parse_parameter_list(&mut self) -> Vec<ParameterDecl> {
-        if self.peek().kind == TokenKind::RParen {
-            return Vec::new();
+    fn parse_parameter_list(&mut self) -> PResult<Vec<ParameterDecl>> {
+        if matches!(self.peek_kind(), Some(TokenKind::RParen)) {
+            return Ok(Vec::new());
         }
 
-        if self.peek().kind == TokenKind::Void
+        if matches!(self.peek_kind(), Some(TokenKind::Void))
             && self.pos + 1 < self.tokens.len()
-            && self.tokens[self.pos + 1].kind == TokenKind::RParen
+            && matches!(self.tokens[self.pos + 1].kind, TokenKind::RParen)
         {
-            self.advance();
-            return Vec::new();
+            self.advance()?;
+            return Ok(Vec::new());
         }
 
         let mut params = Vec::new();
 
         loop {
-            let param = self.parse_parameter();
+            let param = self.parse_parameter()?;
             if param.r#type.is_void() {
-                panic!("'void' parameter must be the only parameter");
+                return Err(ParserError::VoidOnlyParameter);
             }
             params.push(param);
 
-            if self.peek().kind == TokenKind::Comma {
-                self.advance();
+            if matches!(self.peek_kind(), Some(TokenKind::Comma)) {
+                self.advance()?;
                 continue;
             }
             break;
         }
 
-        params
+        Ok(params)
     }
 
-    fn parse_parameter(&mut self) -> ParameterDecl {
-        let base_type = self.parse_type_specifiers();
-        let declarator = self.parse_declarator();
+    fn parse_parameter(&mut self) -> PResult<ParameterDecl> {
+        let base_type = self.parse_type_specifiers()?;
+        let declarator = self.parse_declarator()?;
         let param_type = declarator.type_expr.apply(base_type);
-        ParameterDecl {
+        Ok(ParameterDecl {
             name: declarator.name,
             r#type: param_type,
-        }
+        })
     }
 
-    fn is_declaration_start(&self) -> bool {
+    fn declaration(&mut self) -> PResult<Decl> {
         if self.pos >= self.tokens.len() {
-            return false;
-        }
-        matches!(
-            self.tokens[self.pos].kind,
-            TokenKind::Int
-                | TokenKind::Long
-                | TokenKind::Double
-                | TokenKind::Unsigned
-                | TokenKind::Signed
-                | TokenKind::Void
-                | TokenKind::Static
-                | TokenKind::Extern
-                | TokenKind::Const
-        )
-    }
-
-    fn variable_declaration_stmt(&mut self) -> Stmt {
-        let Token { start, .. } = self.peek();
-        let (base_type, storage_class) = self.parse_specifiers();
-        let declarator = self.parse_declarator();
-        let name = declarator.name.clone();
-        let var_type = declarator.type_expr.apply(base_type);
-        if var_type.is_void() {
-            panic!("variable declared with void type");
-        }
-        if matches!(var_type, Type::FunType(_, _)) {
-            panic!("function declarations are not allowed in block scope");
-        }
-        let init = if self.peek().kind == TokenKind::Equal {
-            self.advance();
-            Some(self.expr())
-        } else {
-            None
-        };
-
-        self.skip(&TokenKind::Semicolon);
-
-        let end = self.index;
-        let source = self.source_slice(start, end);
-
-        let is_definition = storage_class != Some(StorageClass::Extern);
-        let decl = VariableDecl {
-            name,
-            init,
-            storage_class,
-            r#type: var_type.clone(),
-            is_definition,
-        };
-
-        Stmt {
-            kind: StmtKind::Declaration(decl),
-            start,
-            end,
-            source,
-            r#type: var_type,
-        }
-    }
-
-    pub fn parse(&mut self) -> Program {
-        let mut decls = Vec::new();
-        while self.pos < self.tokens.len() {
-            decls.push(self.declaration());
-        }
-        self.ensure_done();
-        Program(decls)
-    }
-
-    fn declaration(&mut self) -> Decl {
-        if self.pos >= self.tokens.len() {
-            panic!("Unexpected end of input while parsing declaration");
+            return Err(ParserError::UnexpectedEof(" while parsing declaration"));
         }
 
-        let Token { start, .. } = self.peek();
-        let (base_type, storage_class) = self.parse_specifiers();
-        let declarator = self.parse_declarator();
+        let Token { start, .. } = self.peek()?;
+        let (base_type, storage_class) = self.parse_specifiers()?;
+        let declarator = self.parse_declarator()?;
         let name = declarator.name.clone();
 
         match declarator.type_expr {
@@ -685,9 +719,8 @@ impl Parser {
             type_expr => {
                 let var_type = type_expr.apply(base_type);
                 if var_type.is_void() {
-                    panic!("variable '{name}' declared with void type");
+                    return Err(ParserError::VariableWithVoidType);
                 }
-
                 self.parse_variable_declaration(start, name, var_type, storage_class)
             }
         }
@@ -700,21 +733,21 @@ impl Parser {
         params: Vec<ParameterDecl>,
         return_type: Type,
         storage_class: Option<StorageClass>,
-    ) -> Decl {
-        let body = if self.pos < self.tokens.len() && self.peek().kind == TokenKind::LBrace {
-            self.advance();
-            let stmts = self.stmts();
-            self.skip(&TokenKind::RBrace);
+    ) -> PResult<Decl> {
+        let body = if matches!(self.peek_kind(), Some(TokenKind::LBrace)) {
+            self.advance()?;
+            let stmts = self.stmts()?;
+            self.expect(&TokenKind::RBrace)?;
             Some(stmts)
         } else {
-            self.skip(&TokenKind::Semicolon);
+            self.expect(&TokenKind::Semicolon)?;
             None
         };
 
         let end = self.index;
         let source = self.source_slice(start, end);
 
-        Decl {
+        Ok(Decl {
             kind: DeclKind::Function(FunctionDecl {
                 name,
                 params,
@@ -725,7 +758,7 @@ impl Parser {
             start,
             end,
             source,
-        }
+        })
     }
 
     fn parse_variable_declaration(
@@ -734,19 +767,19 @@ impl Parser {
         name: String,
         ty: Type,
         storage_class: Option<StorageClass>,
-    ) -> Decl {
+    ) -> PResult<Decl> {
         if matches!(ty, Type::FunType(_, _)) {
-            panic!("variable '{name}' declared with function type");
+            return Err(ParserError::VariableWithFunctionType);
         }
 
-        let init = if self.peek().kind == TokenKind::Equal {
-            self.advance();
-            Some(self.expr())
+        let init = if matches!(self.peek_kind(), Some(TokenKind::Equal)) {
+            self.advance()?;
+            Some(self.expr()?)
         } else {
             None
         };
 
-        self.skip(&TokenKind::Semicolon);
+        self.expect(&TokenKind::Semicolon)?;
 
         let end = self.index;
         let source = self.source_slice(start, end);
@@ -760,53 +793,95 @@ impl Parser {
             is_definition,
         };
 
-        Decl {
+        Ok(Decl {
             kind: DeclKind::Variable(decl),
             start,
             end,
             source,
-        }
+        })
     }
 
-    fn stmts(&mut self) -> Vec<Stmt> {
-        let mut stmts = vec![];
+    fn stmts(&mut self) -> PResult<Vec<Stmt>> {
+        let mut out = vec![];
 
-        while self.peek().kind != TokenKind::RBrace {
+        while !matches!(self.peek_kind(), Some(TokenKind::RBrace)) {
             if self.is_declaration_start() {
-                stmts.push(self.variable_declaration_stmt());
+                out.push(self.variable_declaration_stmt()?);
             } else {
-                stmts.push(self.stmt());
+                out.push(self.stmt()?);
             }
         }
 
-        stmts
+        Ok(out)
     }
 
-    fn stmt(&mut self) -> Stmt {
-        let token = self.peek();
-        match token.kind {
+    fn variable_declaration_stmt(&mut self) -> PResult<Stmt> {
+        let Token { start, .. } = self.peek()?;
+        let (base_type, storage_class) = self.parse_specifiers()?;
+        let declarator = self.parse_declarator()?;
+        let name = declarator.name.clone();
+        let var_type = declarator.type_expr.apply(base_type);
+        if var_type.is_void() {
+            return Err(ParserError::VariableWithVoidType);
+        }
+        if matches!(var_type, Type::FunType(_, _)) {
+            return Err(ParserError::FunctionDeclInBlockScope);
+        }
+        let init = if matches!(self.peek_kind(), Some(TokenKind::Equal)) {
+            self.advance()?;
+            Some(self.expr()?)
+        } else {
+            None
+        };
+
+        self.expect(&TokenKind::Semicolon)?;
+
+        let end = self.index;
+        let source = self.source_slice(start, end);
+
+        let is_definition = storage_class != Some(StorageClass::Extern);
+        let decl = VariableDecl {
+            name,
+            init,
+            storage_class,
+            r#type: var_type.clone(),
+            is_definition,
+        };
+
+        Ok(Stmt {
+            kind: StmtKind::Declaration(decl),
+            start,
+            end,
+            source,
+            r#type: var_type,
+        })
+    }
+
+    fn stmt(&mut self) -> PResult<Stmt> {
+        let token = self.peek()?;
+        match token.kind.clone() {
             TokenKind::Return => {
-                self.advance();
-                let expr = self.expr();
-                self.skip(&TokenKind::Semicolon);
-                Stmt {
+                self.advance()?;
+                let expr = self.expr()?;
+                self.expect(&TokenKind::Semicolon)?;
+                Ok(Stmt {
                     kind: StmtKind::Return(expr),
                     start: token.start,
                     end: self.index,
                     source: token.source,
                     r#type: Type::Int,
-                }
+                })
             }
             TokenKind::LBrace => self.block(),
             TokenKind::Semicolon => {
-                self.advance();
-                Stmt {
+                self.advance()?;
+                Ok(Stmt {
                     kind: StmtKind::Null,
                     start: token.start,
                     end: token.end,
                     source: token.source,
                     r#type: Type::Void,
-                }
+                })
             }
             TokenKind::If => self.if_stmt(),
             TokenKind::While => self.while_stmt(),
@@ -815,75 +890,75 @@ impl Parser {
             TokenKind::Break => self.break_stmt(),
             TokenKind::Continue => self.continue_stmt(),
             _ => {
-                let expr = self.expr();
-                self.skip(&TokenKind::Semicolon);
+                let expr = self.expr()?;
+                self.expect(&TokenKind::Semicolon)?;
                 let start = expr.start;
                 let end = expr.end;
                 let source = expr.source.clone();
-                Stmt {
+                Ok(Stmt {
                     kind: StmtKind::Expr(expr),
                     start,
                     end,
                     source,
                     r#type: Type::Int,
-                }
+                })
             }
         }
     }
 
-    fn break_stmt(&mut self) -> Stmt {
-        let Token { start, .. } = self.peek();
-        self.advance();
-        self.skip(&TokenKind::Semicolon);
+    fn break_stmt(&mut self) -> PResult<Stmt> {
+        let Token { start, .. } = self.peek()?;
+        self.advance()?;
+        self.expect(&TokenKind::Semicolon)?;
         let end = self.index;
-        Stmt {
+        Ok(Stmt {
             kind: StmtKind::Break { loop_id: None },
             start,
             end,
             source: self.source_slice(start, end),
             r#type: Type::Void,
-        }
+        })
     }
 
-    fn continue_stmt(&mut self) -> Stmt {
-        let Token { start, .. } = self.peek();
-        self.advance();
-        self.skip(&TokenKind::Semicolon);
+    fn continue_stmt(&mut self) -> PResult<Stmt> {
+        let Token { start, .. } = self.peek()?;
+        self.advance()?;
+        self.expect(&TokenKind::Semicolon)?;
         let end = self.index;
-        Stmt {
+        Ok(Stmt {
             kind: StmtKind::Continue { loop_id: None },
             start,
             end,
             source: self.source_slice(start, end),
             r#type: Type::Void,
-        }
+        })
     }
 
-    fn block(&mut self) -> Stmt {
-        let Token { start, .. } = self.peek();
-        self.skip(&TokenKind::LBrace);
-        let stmts = self.stmts();
-        self.skip(&TokenKind::RBrace);
+    fn block(&mut self) -> PResult<Stmt> {
+        let Token { start, .. } = self.peek()?;
+        self.expect(&TokenKind::LBrace)?;
+        let stmts = self.stmts()?;
+        self.expect(&TokenKind::RBrace)?;
         let end = self.index;
         let source: String = self.source[start..end].iter().collect();
-        Stmt {
+        Ok(Stmt {
             kind: StmtKind::Compound(stmts),
             start,
             end,
             source,
             r#type: Type::Void,
-        }
+        })
     }
 
-    fn while_stmt(&mut self) -> Stmt {
-        let Token { start, .. } = self.peek();
-        self.advance(); // consume while
-        self.skip(&TokenKind::LParen);
-        let condition = self.expr();
-        self.skip(&TokenKind::RParen);
-        let body_stmt = self.stmt();
+    fn while_stmt(&mut self) -> PResult<Stmt> {
+        let Token { start, .. } = self.peek()?;
+        self.advance()?;
+        self.expect(&TokenKind::LParen)?;
+        let condition = self.expr()?;
+        self.expect(&TokenKind::RParen)?;
+        let body_stmt = self.stmt()?;
         let end = body_stmt.end;
-        Stmt {
+        Ok(Stmt {
             kind: StmtKind::While {
                 condition,
                 body: Box::new(body_stmt),
@@ -893,20 +968,20 @@ impl Parser {
             end,
             source: self.source_slice(start, end),
             r#type: Type::Void,
-        }
+        })
     }
 
-    fn do_while_stmt(&mut self) -> Stmt {
-        let Token { start, .. } = self.peek();
-        self.advance(); // consume do
-        let body_stmt = self.stmt();
-        self.skip(&TokenKind::While);
-        self.skip(&TokenKind::LParen);
-        let condition = self.expr();
-        self.skip(&TokenKind::RParen);
-        self.skip(&TokenKind::Semicolon);
+    fn do_while_stmt(&mut self) -> PResult<Stmt> {
+        let Token { start, .. } = self.peek()?;
+        self.advance()?;
+        let body_stmt = self.stmt()?;
+        self.expect(&TokenKind::While)?;
+        self.expect(&TokenKind::LParen)?;
+        let condition = self.expr()?;
+        self.expect(&TokenKind::RParen)?;
+        self.expect(&TokenKind::Semicolon)?;
         let end = self.index;
-        Stmt {
+        Ok(Stmt {
             kind: StmtKind::DoWhile {
                 body: Box::new(body_stmt),
                 condition,
@@ -916,46 +991,46 @@ impl Parser {
             end,
             source: self.source_slice(start, end),
             r#type: Type::Void,
-        }
+        })
     }
 
-    fn for_stmt(&mut self) -> Stmt {
-        let Token { start, .. } = self.peek();
-        self.advance(); // consume for
-        self.skip(&TokenKind::LParen);
+    fn for_stmt(&mut self) -> PResult<Stmt> {
+        let Token { start, .. } = self.peek()?;
+        self.advance()?;
+        self.expect(&TokenKind::LParen)?;
 
-        let init = if self.peek().kind == TokenKind::Semicolon {
-            self.advance();
+        let init = if matches!(self.peek_kind(), Some(TokenKind::Semicolon)) {
+            self.advance()?;
             ForInit::Expr(None)
         } else if self.is_declaration_start() {
-            let decl = self.variable_declaration_stmt();
+            let decl = self.variable_declaration_stmt()?;
             ForInit::Declaration(Box::new(decl))
         } else {
-            let expr = self.expr();
-            self.skip(&TokenKind::Semicolon);
+            let expr = self.expr()?;
+            self.expect(&TokenKind::Semicolon)?;
             ForInit::Expr(Some(expr))
         };
 
-        let condition = if self.peek().kind == TokenKind::Semicolon {
-            self.advance();
+        let condition = if matches!(self.peek_kind(), Some(TokenKind::Semicolon)) {
+            self.advance()?;
             None
         } else {
-            let expr = self.expr();
-            self.skip(&TokenKind::Semicolon);
+            let expr = self.expr()?;
+            self.expect(&TokenKind::Semicolon)?;
             Some(expr)
         };
 
-        let post = if self.peek().kind == TokenKind::RParen {
+        let post = if matches!(self.peek_kind(), Some(TokenKind::RParen)) {
             None
         } else {
-            Some(self.expr())
+            Some(self.expr()?)
         };
 
-        self.skip(&TokenKind::RParen);
-        let body_stmt = self.stmt();
+        self.expect(&TokenKind::RParen)?;
+        let body_stmt = self.stmt()?;
         let end = body_stmt.end;
 
-        Stmt {
+        Ok(Stmt {
             kind: StmtKind::For {
                 init,
                 condition,
@@ -967,29 +1042,28 @@ impl Parser {
             end,
             source: self.source_slice(start, end),
             r#type: Type::Void,
-        }
+        })
     }
 
-    fn if_stmt(&mut self) -> Stmt {
-        let Token { start, .. } = self.peek();
-        self.advance(); // consume if
-        self.skip(&TokenKind::LParen);
-        let condition = self.expr();
-        self.skip(&TokenKind::RParen);
-        let then_branch = self.stmt();
-        let else_branch = if self.peek().kind == TokenKind::Else {
-            self.advance();
-            Some(Box::new(self.stmt()))
+    fn if_stmt(&mut self) -> PResult<Stmt> {
+        let Token { start, .. } = self.peek()?;
+        self.advance()?; // if
+        self.expect(&TokenKind::LParen)?;
+        let condition = self.expr()?;
+        self.expect(&TokenKind::RParen)?;
+        let then_branch = self.stmt()?;
+        let else_branch = if matches!(self.peek_kind(), Some(TokenKind::Else)) {
+            self.advance()?;
+            Some(Box::new(self.stmt()?))
         } else {
             None
         };
-        let end = if let Some(ref else_stmt) = else_branch {
-            else_stmt.end
-        } else {
-            then_branch.end
-        };
+        let end = else_branch
+            .as_ref()
+            .map(|b| b.end)
+            .unwrap_or(then_branch.end);
         let source = self.source_slice(start, end);
-        Stmt {
+        Ok(Stmt {
             kind: StmtKind::If {
                 condition,
                 then_branch: Box::new(then_branch),
@@ -999,53 +1073,56 @@ impl Parser {
             end,
             source,
             r#type: Type::Void,
-        }
+        })
     }
 
-    fn expr(&mut self) -> Expr {
+    fn expr(&mut self) -> PResult<Expr> {
         self.assign()
     }
 
-    fn assign(&mut self) -> Expr {
-        let lhs = self.conditional();
+    fn assign(&mut self) -> PResult<Expr> {
+        let lhs = self.conditional()?;
 
-        let token_kind = self.peek().kind.clone();
+        let token_kind = self.peek_kind();
         match token_kind {
-            TokenKind::Equal => {
-                self.advance();
-                let rhs = self.assign();
-                self.make_assignment_expr(lhs, rhs)
+            Some(TokenKind::Equal) => {
+                self.advance()?;
+                let rhs = self.assign()?;
+                Ok(self.make_assignment_expr(lhs, rhs))
             }
-            TokenKind::PlusEqual
-            | TokenKind::MinusEqual
-            | TokenKind::StarEqual
-            | TokenKind::SlashEqual
-            | TokenKind::PercentEqual
-            | TokenKind::AmpersandEqual
-            | TokenKind::OrEqual
-            | TokenKind::XorEqual
-            | TokenKind::LShiftEqual
-            | TokenKind::RShiftEqual => {
-                self.advance();
-                let rhs = self.assign();
-                let compound_rhs = self.compound_assignment_rhs(lhs.clone(), rhs, &token_kind);
-                self.make_assignment_expr(lhs, compound_rhs)
+            Some(
+                TokenKind::PlusEqual
+                | TokenKind::MinusEqual
+                | TokenKind::StarEqual
+                | TokenKind::SlashEqual
+                | TokenKind::PercentEqual
+                | TokenKind::AmpersandEqual
+                | TokenKind::OrEqual
+                | TokenKind::XorEqual
+                | TokenKind::LShiftEqual
+                | TokenKind::RShiftEqual,
+            ) => {
+                let op = self.peek_kind().unwrap();
+                self.advance()?;
+                let rhs = self.assign()?;
+                let compound_rhs = self.compound_assignment_rhs(lhs.clone(), rhs, &op)?;
+                Ok(self.make_assignment_expr(lhs, compound_rhs))
             }
-            _ => lhs,
+            _ => Ok(lhs),
         }
     }
 
-    fn conditional(&mut self) -> Expr {
-        let condition = self.or();
+    fn conditional(&mut self) -> PResult<Expr> {
+        let condition = self.or()?;
 
-        if self.peek().kind == TokenKind::Question {
-            self.advance();
-            let then_expr = self.assign();
-            self.skip(&TokenKind::Colon);
-            let else_expr = self.conditional();
+        if matches!(self.peek_kind(), Some(TokenKind::Question)) {
+            self.advance()?;
+            let then_expr = self.assign()?;
+            self.expect(&TokenKind::Colon)?;
+            let else_expr = self.conditional()?;
             let start = condition.start;
             let end = else_expr.end;
-            Expr {
+            Ok(Expr {
                 kind: ExprKind::Conditional(
                     Box::new(condition),
                     Box::new(then_expr),
@@ -1055,9 +1132,9 @@ impl Parser {
                 end,
                 source: self.source_slice(start, end),
                 r#type: Type::Int,
-            }
+            })
         } else {
-            condition
+            Ok(condition)
         }
     }
 
@@ -1073,7 +1150,7 @@ impl Parser {
         }
     }
 
-    fn compound_assignment_rhs(&self, lhs: Expr, rhs: Expr, op: &TokenKind) -> Expr {
+    fn compound_assignment_rhs(&self, lhs: Expr, rhs: Expr, op: &TokenKind) -> PResult<Expr> {
         let start = lhs.start;
         let end = rhs.end;
 
@@ -1090,477 +1167,425 @@ impl Parser {
             TokenKind::XorEqual => ExprKind::Xor(Box::new(lhs), Box::new(rhs)),
             TokenKind::LShiftEqual => ExprKind::LeftShift(Box::new(lhs), Box::new(rhs)),
             TokenKind::RShiftEqual => ExprKind::RightShift(Box::new(lhs), Box::new(rhs)),
-            kind => panic!("Unsupported compound assignment token: {kind:?}"),
+            other => return Err(ParserError::UnsupportedCompoundAssign(other.clone())),
         };
 
-        Expr {
+        Ok(Expr {
             kind,
             start,
             end,
             source,
             r#type: Type::Int,
-        }
+        })
     }
 
-    fn or(&mut self) -> Expr {
-        let mut node = self.and();
+    fn or(&mut self) -> PResult<Expr> {
+        let mut node = self.and()?;
 
-        #[allow(irrefutable_let_patterns)]
-        while let Token {
-            kind,
-            start,
-            end,
-            source,
-        } = self.peek()
-        {
-            if !matches!(kind, TokenKind::Or) {
-                break;
-            }
-
-            self.advance();
+        while matches!(self.peek_kind(), Some(TokenKind::Or)) {
+            let Token {
+                start, end, source, ..
+            } = self.peek()?;
+            self.advance()?;
 
             node = Expr {
-                kind: ExprKind::Or(Box::new(node), Box::new(self.and())),
+                kind: ExprKind::Or(Box::new(node), Box::new(self.and()?)),
                 start,
                 end,
-                source: source.clone(),
+                source,
                 r#type: Type::Int,
             }
         }
 
-        node
+        Ok(node)
     }
 
-    fn and(&mut self) -> Expr {
-        let mut node = self.bit_or();
+    fn and(&mut self) -> PResult<Expr> {
+        let mut node = self.bit_or()?;
 
-        #[allow(irrefutable_let_patterns)]
-        while let Token {
-            kind,
-            start,
-            end,
-            source,
-        } = self.peek()
-        {
-            if !matches!(kind, TokenKind::DoubleAmpersand) {
-                break;
-            }
-
-            self.advance();
+        while matches!(self.peek_kind(), Some(TokenKind::DoubleAmpersand)) {
+            let Token {
+                start, end, source, ..
+            } = self.peek()?;
+            self.advance()?;
 
             node = Expr {
-                kind: ExprKind::And(Box::new(node), Box::new(self.bit_or())),
+                kind: ExprKind::And(Box::new(node), Box::new(self.bit_or()?)),
                 start,
                 end,
-                source: source.clone(),
+                source,
                 r#type: Type::Int,
             }
         }
 
-        node
+        Ok(node)
     }
 
-    fn bit_or(&mut self) -> Expr {
-        let mut node = self.xor();
+    fn bit_or(&mut self) -> PResult<Expr> {
+        let mut node = self.xor()?;
 
-        #[allow(irrefutable_let_patterns)]
-        while let Token {
-            kind,
-            start,
-            end,
-            source,
-        } = self.peek()
-        {
-            if !matches!(kind, TokenKind::BitOr) {
-                break;
-            }
-
-            self.advance();
+        while matches!(self.peek_kind(), Some(TokenKind::BitOr)) {
+            let Token {
+                start, end, source, ..
+            } = self.peek()?;
+            self.advance()?;
 
             node = Expr {
-                kind: ExprKind::BitOr(Box::new(node), Box::new(self.xor())),
+                kind: ExprKind::BitOr(Box::new(node), Box::new(self.xor()?)),
                 start,
                 end,
-                source: source.clone(),
+                source,
                 r#type: Type::Int,
             }
         }
 
-        node
+        Ok(node)
     }
 
-    fn xor(&mut self) -> Expr {
-        let mut node = self.bit_and();
+    fn xor(&mut self) -> PResult<Expr> {
+        let mut node = self.bit_and()?;
 
-        #[allow(irrefutable_let_patterns)]
-        while let Token {
-            kind,
-            start,
-            end,
-            source,
-        } = self.peek()
-        {
-            if !matches!(kind, TokenKind::Xor) {
-                break;
-            }
-
-            self.advance();
+        while matches!(self.peek_kind(), Some(TokenKind::Xor)) {
+            let Token {
+                start, end, source, ..
+            } = self.peek()?;
+            self.advance()?;
 
             node = Expr {
-                kind: ExprKind::Xor(Box::new(node), Box::new(self.bit_and())),
+                kind: ExprKind::Xor(Box::new(node), Box::new(self.bit_and()?)),
                 start,
                 end,
-                source: source.clone(),
+                source,
                 r#type: Type::Int,
             }
         }
 
-        node
+        Ok(node)
     }
 
-    fn bit_and(&mut self) -> Expr {
-        let mut node = self.eq();
+    fn bit_and(&mut self) -> PResult<Expr> {
+        let mut node = self.eq()?;
 
-        #[allow(irrefutable_let_patterns)]
-        while let Token {
-            kind,
-            start,
-            end,
-            source,
-        } = self.peek()
-        {
-            if !matches!(kind, TokenKind::Ampersand) {
-                break;
-            }
-
-            self.advance();
+        while matches!(self.peek_kind(), Some(TokenKind::Ampersand)) {
+            let Token {
+                start, end, source, ..
+            } = self.peek()?;
+            self.advance()?;
 
             node = Expr {
-                kind: ExprKind::BitAnd(Box::new(node), Box::new(self.eq())),
+                kind: ExprKind::BitAnd(Box::new(node), Box::new(self.eq()?)),
                 start,
                 end,
-                source: source.clone(),
+                source,
                 r#type: Type::Int,
             }
         }
 
-        node
+        Ok(node)
     }
 
-    fn eq(&mut self) -> Expr {
-        let mut node = self.rel();
+    fn eq(&mut self) -> PResult<Expr> {
+        let mut node = self.rel()?;
 
-        #[allow(irrefutable_let_patterns)]
-        while let Token {
-            kind,
-            start,
-            end,
-            source,
-        } = self.peek()
-        {
-            if !matches!(kind, TokenKind::DoubleEqual | TokenKind::NotEqual) {
-                break;
-            }
-
-            self.advance();
+        while matches!(
+            self.peek_kind(),
+            Some(TokenKind::DoubleEqual | TokenKind::NotEqual)
+        ) {
+            let Token {
+                start,
+                end,
+                source,
+                kind,
+                ..
+            } = self.peek()?;
+            self.advance()?;
 
             node = Expr {
                 kind: if kind == TokenKind::DoubleEqual {
-                    ExprKind::Equal(Box::new(node), Box::new(self.rel()))
+                    ExprKind::Equal(Box::new(node), Box::new(self.rel()?))
                 } else {
-                    ExprKind::NotEqual(Box::new(node), Box::new(self.rel()))
+                    ExprKind::NotEqual(Box::new(node), Box::new(self.rel()?))
                 },
                 start,
                 end,
-                source: source.clone(),
+                source,
                 r#type: Type::Int,
             }
         }
 
-        node
+        Ok(node)
     }
 
-    fn rel(&mut self) -> Expr {
-        let mut node = self.shift();
+    fn rel(&mut self) -> PResult<Expr> {
+        let mut node = self.shift()?;
 
-        #[allow(irrefutable_let_patterns)]
-        while let Token {
-            kind,
-            start,
-            end,
-            source,
-        } = self.peek()
-        {
-            if !matches!(
-                kind,
+        while matches!(
+            self.peek_kind(),
+            Some(
                 TokenKind::LessThan
                     | TokenKind::LessThanEqual
                     | TokenKind::GreaterThan
                     | TokenKind::GreaterThanEqual
-            ) {
-                break;
-            }
-
-            self.advance();
+            )
+        ) {
+            let Token {
+                start,
+                end,
+                source,
+                kind,
+                ..
+            } = self.peek()?;
+            self.advance()?;
 
             node = Expr {
                 kind: if kind == TokenKind::LessThan {
-                    ExprKind::LessThan(Box::new(node), Box::new(self.shift()))
+                    ExprKind::LessThan(Box::new(node), Box::new(self.shift()?))
                 } else if kind == TokenKind::LessThanEqual {
-                    ExprKind::LessThanEqual(Box::new(node), Box::new(self.shift()))
+                    ExprKind::LessThanEqual(Box::new(node), Box::new(self.shift()?))
                 } else if kind == TokenKind::GreaterThan {
-                    ExprKind::GreaterThan(Box::new(node), Box::new(self.shift()))
+                    ExprKind::GreaterThan(Box::new(node), Box::new(self.shift()?))
                 } else {
-                    ExprKind::GreaterThanEqual(Box::new(node), Box::new(self.shift()))
+                    ExprKind::GreaterThanEqual(Box::new(node), Box::new(self.shift()?))
                 },
                 start,
                 end,
-                source: source.clone(),
+                source,
                 r#type: Type::Int,
             }
         }
 
-        node
+        Ok(node)
     }
 
-    fn shift(&mut self) -> Expr {
-        let mut node = self.add();
+    fn shift(&mut self) -> PResult<Expr> {
+        let mut node = self.add()?;
 
-        #[allow(irrefutable_let_patterns)]
-        while let Token {
-            kind,
-            start,
-            end,
-            source,
-        } = self.peek()
-        {
-            if !matches!(kind, TokenKind::LShift | TokenKind::RShift) {
-                break;
-            }
-
-            self.advance();
+        while matches!(
+            self.peek_kind(),
+            Some(TokenKind::LShift | TokenKind::RShift)
+        ) {
+            let Token {
+                start,
+                end,
+                source,
+                kind,
+                ..
+            } = self.peek()?;
+            self.advance()?;
 
             node = Expr {
                 kind: if kind == TokenKind::LShift {
-                    ExprKind::LeftShift(Box::new(node), Box::new(self.add()))
+                    ExprKind::LeftShift(Box::new(node), Box::new(self.add()?))
                 } else {
-                    ExprKind::RightShift(Box::new(node), Box::new(self.add()))
+                    ExprKind::RightShift(Box::new(node), Box::new(self.add()?))
                 },
                 start,
                 end,
-                source: source.clone(),
+                source,
                 r#type: Type::Int,
             }
         }
 
-        node
+        Ok(node)
     }
 
-    fn add(&mut self) -> Expr {
-        let mut node = self.mul();
+    fn add(&mut self) -> PResult<Expr> {
+        let mut node = self.mul()?;
 
-        #[allow(irrefutable_let_patterns)]
-        while let Token {
-            kind,
-            start,
-            end,
-            source,
-        } = self.peek()
-        {
-            if !matches!(kind, TokenKind::Plus | TokenKind::Minus) {
-                break;
-            }
-
-            self.advance();
+        while matches!(self.peek_kind(), Some(TokenKind::Plus | TokenKind::Minus)) {
+            let Token {
+                start,
+                end,
+                source,
+                kind,
+                ..
+            } = self.peek()?;
+            self.advance()?;
 
             node = Expr {
                 kind: if kind == TokenKind::Plus {
-                    ExprKind::Add(Box::new(node), Box::new(self.mul()))
+                    ExprKind::Add(Box::new(node), Box::new(self.mul()?))
                 } else {
-                    ExprKind::Sub(Box::new(node), Box::new(self.mul()))
+                    ExprKind::Sub(Box::new(node), Box::new(self.mul()?))
                 },
                 start,
                 end,
-                source: source.clone(),
+                source,
                 r#type: Type::Int,
             }
         }
 
-        node
+        Ok(node)
     }
 
-    fn mul(&mut self) -> Expr {
-        let mut node = self.unary();
+    fn mul(&mut self) -> PResult<Expr> {
+        let mut node = self.unary()?;
 
-        #[allow(irrefutable_let_patterns)]
-        while let Token {
-            kind,
-            start,
-            end,
-            source,
-        } = self.peek()
-        {
-            if !matches!(
+        while matches!(
+            self.peek_kind(),
+            Some(TokenKind::Star | TokenKind::Slash | TokenKind::Percent)
+        ) {
+            let Token {
+                start,
+                end,
+                source,
                 kind,
-                TokenKind::Star | TokenKind::Slash | TokenKind::Percent
-            ) {
-                break;
-            }
-
-            self.advance();
+                ..
+            } = self.peek()?;
+            self.advance()?;
 
             node = Expr {
                 kind: if kind == TokenKind::Star {
-                    ExprKind::Mul(Box::new(node), Box::new(self.unary()))
+                    ExprKind::Mul(Box::new(node), Box::new(self.unary()?))
                 } else if kind == TokenKind::Percent {
-                    ExprKind::Rem(Box::new(node), Box::new(self.unary()))
+                    ExprKind::Rem(Box::new(node), Box::new(self.unary()?))
                 } else {
-                    ExprKind::Div(Box::new(node), Box::new(self.unary()))
+                    ExprKind::Div(Box::new(node), Box::new(self.unary()?))
                 },
                 start,
                 end,
-                source: source.clone(),
+                source,
                 r#type: Type::Int,
             }
         }
 
-        node
+        Ok(node)
     }
 
-    fn unary(&mut self) -> Expr {
-        if self.peek().kind == TokenKind::LParen && self.is_cast_expression() {
-            let Token { start, .. } = self.peek();
-            self.advance(); // consume '('
-            let base_type = self.parse_type_specifiers();
+    fn unary(&mut self) -> PResult<Expr> {
+        if matches!(self.peek_kind(), Some(TokenKind::LParen)) && self.is_cast_expression()? {
+            let Token { start, .. } = self.peek()?;
+            self.advance()?;
+            let base_type = self.parse_type_specifiers()?;
             let mut cast_type = base_type;
-            while self.peek().kind == TokenKind::Star {
-                self.advance();
+            while matches!(self.peek_kind(), Some(TokenKind::Star)) {
+                self.advance()?;
                 cast_type = Type::Pointer(Box::new(cast_type));
             }
             if cast_type.is_void() {
-                panic!("Unsupported cast target: void");
+                return Err(ParserError::UnsupportedCastTargetVoid);
             }
-            self.skip(&TokenKind::RParen);
-            let expr = self.unary();
+            self.expect(&TokenKind::RParen)?;
+            let expr = self.unary()?;
             let end = expr.end;
-            return Expr {
+            return Ok(Expr {
                 kind: ExprKind::Cast(cast_type.clone(), Box::new(expr)),
                 start,
                 end,
                 source: self.source_slice(start, end),
                 r#type: cast_type,
-            };
+            });
         }
 
-        let token = self.peek();
+        let token = self.peek()?;
         match token.kind.clone() {
             TokenKind::Plus => {
-                self.advance();
+                self.advance()?;
                 self.unary()
             }
             TokenKind::Minus => {
-                self.advance();
-                let expr = self.unary();
+                self.advance()?;
+                let expr = self.unary()?;
                 let start = token.start;
                 let end = expr.end;
-                Expr {
+                Ok(Expr {
                     kind: ExprKind::Neg(Box::new(expr)),
                     start,
                     end,
                     source: self.source_slice(start, end),
                     r#type: Type::Int,
-                }
+                })
             }
             TokenKind::Tilde => {
-                self.advance();
-                let expr = self.unary();
+                self.advance()?;
+                let expr = self.unary()?;
                 let start = token.start;
                 let end = expr.end;
-                Expr {
+                Ok(Expr {
                     kind: ExprKind::BitNot(Box::new(expr)),
                     start,
                     end,
                     source: self.source_slice(start, end),
                     r#type: Type::Int,
-                }
+                })
             }
             TokenKind::Not => {
-                self.advance();
-                let expr = self.unary();
+                self.advance()?;
+                let expr = self.unary()?;
                 let start = token.start;
                 let end = expr.end;
-                Expr {
+                Ok(Expr {
                     kind: ExprKind::Not(Box::new(expr)),
                     start,
                     end,
                     source: self.source_slice(start, end),
                     r#type: Type::Int,
-                }
+                })
             }
             TokenKind::Ampersand => {
-                self.advance();
-                let expr = self.unary();
+                self.advance()?;
+                let expr = self.unary()?;
                 let start = token.start;
                 let end = expr.end;
-                Expr {
+                Ok(Expr {
                     kind: ExprKind::AddrOf(Box::new(expr)),
                     start,
                     end,
                     source: self.source_slice(start, end),
                     r#type: Type::Int,
-                }
+                })
             }
             TokenKind::Star => {
-                self.advance();
-                let expr = self.unary();
+                self.advance()?;
+                let expr = self.unary()?;
                 let start = token.start;
                 let end = expr.end;
-                Expr {
+                Ok(Expr {
                     kind: ExprKind::Dereference(Box::new(expr)),
                     start,
                     end,
                     source: self.source_slice(start, end),
                     r#type: Type::Int,
-                }
+                })
             }
             TokenKind::Increment => {
-                self.advance();
-                let expr = self.unary();
+                self.advance()?;
+                let expr = self.unary()?;
                 let start = token.start;
                 let end = expr.end;
-                Expr {
+                Ok(Expr {
                     kind: ExprKind::PreIncrement(Box::new(expr)),
                     start,
                     end,
                     source: self.source_slice(start, end),
                     r#type: Type::Int,
-                }
+                })
             }
             TokenKind::Decrement => {
-                self.advance();
-                let expr = self.unary();
+                self.advance()?;
+                let expr = self.unary()?;
                 let start = token.start;
                 let end = expr.end;
-                Expr {
+                Ok(Expr {
                     kind: ExprKind::PreDecrement(Box::new(expr)),
                     start,
                     end,
                     source: self.source_slice(start, end),
                     r#type: Type::Int,
-                }
+                })
             }
             _ => self.postfix(),
         }
     }
 
-    fn postfix(&mut self) -> Expr {
-        let mut node = self.primary();
+    fn postfix(&mut self) -> PResult<Expr> {
+        let mut node = self.primary()?;
 
         loop {
-            let token = self.peek();
+            let token = self.peek()?;
             match token.kind {
                 TokenKind::Increment => {
-                    self.advance();
+                    self.advance()?;
                     let start = node.start;
                     let end = self.index;
                     let source = self.source_slice(start, end);
@@ -1574,7 +1599,7 @@ impl Parser {
                     };
                 }
                 TokenKind::Decrement => {
-                    self.advance();
+                    self.advance()?;
                     let start = node.start;
                     let end = self.index;
                     let source = self.source_slice(start, end);
@@ -1588,9 +1613,9 @@ impl Parser {
                     };
                 }
                 TokenKind::LBracket => {
-                    self.advance();
-                    let index_expr = self.expr();
-                    self.skip(&TokenKind::RBracket);
+                    self.advance()?;
+                    let index_expr = self.expr()?;
+                    self.expect(&TokenKind::RBracket)?;
                     let start = node.start;
                     let end = self.index;
                     let source = self.source_slice(start, end);
@@ -1616,11 +1641,11 @@ impl Parser {
                     let start = node.start;
                     let func_name = match &node.kind {
                         ExprKind::Var(name) => name.clone(),
-                        kind => panic!("Invalid function call target: {kind:?}"),
+                        kind => return Err(ParserError::InvalidFunctionCallTarget(kind.clone())),
                     };
-                    self.advance();
-                    let args = self.arguments();
-                    self.skip(&TokenKind::RParen);
+                    self.advance()?;
+                    let args = self.arguments()?;
+                    self.expect(&TokenKind::RParen)?;
                     let end = self.index;
                     let source = self.source_slice(start, end);
                     node = Expr {
@@ -1635,124 +1660,124 @@ impl Parser {
             }
         }
 
-        node
+        Ok(node)
     }
 
-    fn primary(&mut self) -> Expr {
+    fn primary(&mut self) -> PResult<Expr> {
         let Token {
             start,
             end,
             kind,
             source,
-        } = self.peek();
+        } = self.peek()?;
 
         match kind.clone() {
             TokenKind::Integer(n) => {
-                self.advance();
-                Expr {
+                self.advance()?;
+                Ok(Expr {
                     kind: ExprKind::Constant(Const::Int(n)),
                     start,
                     end,
                     source,
                     r#type: Type::Int,
-                }
+                })
             }
             TokenKind::LongInteger(n) => {
-                self.advance();
-                Expr {
+                self.advance()?;
+                Ok(Expr {
                     kind: ExprKind::Constant(Const::Long(n)),
                     start,
                     end,
                     source,
                     r#type: Type::Long,
-                }
+                })
             }
             TokenKind::UnsignedInteger(n) => {
-                self.advance();
-                Expr {
+                self.advance()?;
+                Ok(Expr {
                     kind: ExprKind::Constant(Const::UInt(n)),
                     start,
                     end,
                     source,
                     r#type: Type::UInt,
-                }
+                })
             }
             TokenKind::UnsignedLongInteger(n) => {
-                self.advance();
-                Expr {
+                self.advance()?;
+                Ok(Expr {
                     kind: ExprKind::Constant(Const::ULong(n)),
                     start,
                     end,
                     source,
                     r#type: Type::ULong,
-                }
+                })
             }
             TokenKind::Float(n) => {
-                self.advance();
-                Expr {
+                self.advance()?;
+                Ok(Expr {
                     kind: ExprKind::Constant(Const::Double(n)),
                     start,
                     end,
                     source,
                     r#type: Type::Double,
-                }
+                })
             }
             TokenKind::CharConstant(value) => {
-                self.advance();
-                Expr {
+                self.advance()?;
+                Ok(Expr {
                     kind: ExprKind::Constant(Const::Char(value)),
                     start,
                     end,
                     source,
                     r#type: Type::Int,
-                }
+                })
             }
             TokenKind::String(value) => {
-                self.advance();
+                self.advance()?;
                 let mut combined_value = value;
                 let mut final_end = end;
                 while self.pos < self.tokens.len() {
-                    let next_token = self.peek();
+                    let next_token = self.peek()?;
                     if let TokenKind::String(next_value) = next_token.kind.clone() {
                         combined_value.push_str(&next_value);
                         final_end = next_token.end;
-                        self.advance();
+                        self.advance()?;
                     } else {
                         break;
                     }
                 }
                 let combined_source = self.source_slice(start, final_end);
-                Expr {
+                Ok(Expr {
                     kind: ExprKind::String(combined_value),
                     start,
                     end: final_end,
                     source: combined_source,
                     r#type: Type::Pointer(Box::new(Type::Char)),
-                }
+                })
             }
             TokenKind::Identifier(name) => {
-                self.advance();
-                Expr {
+                self.advance()?;
+                Ok(Expr {
                     kind: ExprKind::Var(name),
                     start,
                     end,
                     source,
                     r#type: Type::Int,
-                }
+                })
             }
             TokenKind::LParen => {
-                self.advance();
-                let expr = self.expr();
-                self.skip(&TokenKind::RParen);
-                expr
+                self.advance()?;
+                let expr = self.expr()?;
+                self.expect(&TokenKind::RParen)?;
+                Ok(expr)
             }
-            kind => panic!("Expected primary, found {kind:?}"),
+            other => Err(ParserError::ExpectedPrimary(other)),
         }
     }
 
-    fn is_cast_expression(&self) -> bool {
+    fn is_cast_expression(&self) -> PResult<bool> {
         if self.pos + 1 >= self.tokens.len() {
-            return false;
+            return Ok(false);
         }
 
         let mut idx = self.pos + 1;
@@ -1770,84 +1795,104 @@ impl Parser {
                 | TokenKind::Double
                 | TokenKind::Char
                 | TokenKind::Const => {
-                    state.add(kind);
+                    state.add(kind)?;
                     consumed_any = true;
                     idx += 1;
                 }
                 TokenKind::Star => {
                     if !consumed_any {
-                        return false;
+                        return Ok(false);
                     }
                     idx += 1;
                 }
                 TokenKind::RParen => {
                     if !consumed_any {
-                        return false;
+                        return Ok(false);
                     }
-                    // ensure the specifier combination is valid
-                    let _ = state.resolve();
-                    return true;
+                    let _ = state.resolve()?;
+                    return Ok(true);
                 }
-                _ => return false,
+                _ => return Ok(false),
             }
         }
 
-        false
+        Ok(false)
     }
 
-    fn source_slice(&self, start: usize, end: usize) -> String {
-        self.source[start..end].iter().collect()
-    }
-
-    fn arguments(&mut self) -> Vec<Expr> {
+    fn arguments(&mut self) -> PResult<Vec<Expr>> {
         let mut args = Vec::new();
 
-        if self.peek().kind == TokenKind::RParen {
-            return args;
+        if matches!(self.peek_kind(), Some(TokenKind::RParen)) {
+            return Ok(args);
         }
 
         loop {
-            args.push(self.assign());
-            if self.peek().kind == TokenKind::Comma {
-                self.advance();
+            args.push(self.assign()?);
+            if matches!(self.peek_kind(), Some(TokenKind::Comma)) {
+                self.advance()?;
                 continue;
             }
             break;
         }
 
-        args
+        Ok(args)
     }
 
-    fn peek(&self) -> Token {
-        self.tokens[self.pos].clone()
-    }
-
-    fn advance(&mut self) {
+    fn is_declaration_start(&self) -> bool {
         if self.pos >= self.tokens.len() {
-            panic!("unexpected end of file");
+            return false;
         }
+        matches!(
+            self.tokens[self.pos].kind,
+            TokenKind::Int
+                | TokenKind::Long
+                | TokenKind::Double
+                | TokenKind::Unsigned
+                | TokenKind::Signed
+                | TokenKind::Void
+                | TokenKind::Static
+                | TokenKind::Extern
+                | TokenKind::Const
+        )
+    }
 
-        self.index = self.peek().end;
+    fn peek_kind(&self) -> Option<TokenKind> {
+        self.tokens.get(self.pos).map(|t| t.kind.clone())
+    }
+
+    fn peek(&self) -> PResult<Token> {
+        self.tokens
+            .get(self.pos)
+            .cloned()
+            .ok_or(ParserError::UnexpectedEof(""))
+    }
+
+    fn advance(&mut self) -> PResult<()> {
+        if self.pos >= self.tokens.len() {
+            return Err(ParserError::UnexpectedEof(""));
+        }
+        self.index = self.peek()?.end;
         self.pos += 1;
+        Ok(())
     }
 
-    fn skip(&mut self, kind: &TokenKind) {
-        if !self.r#match(kind) {
-            panic!("Expected {kind:?}, got {:?}", self.peek());
+    fn expect(&mut self, kind: &TokenKind) -> PResult<()> {
+        let found = self.peek_kind();
+        if found.as_ref() != Some(kind) {
+            return Err(ParserError::ExpectedToken(kind.clone(), found));
         }
-
-        self.advance();
+        self.advance()
     }
 
-    fn ensure_done(&self) {
+    fn ensure_done(&self) -> PResult<()> {
         if self.pos == self.tokens.len() {
-            return;
+            Ok(())
+        } else {
+            Err(ParserError::NotAtEnd(self.peek_kind()))
         }
-        panic!("Not at end of program");
     }
 
-    fn r#match(&self, kind: &TokenKind) -> bool {
-        let peeked = self.peek();
-        peeked.kind == *kind
+    fn source_slice(&self, start: usize, end: usize) -> String {
+        self.source[start..end].iter().collect()
     }
 }

@@ -41,7 +41,7 @@ fn main() -> anyhow::Result<(), Error> {
             eprintln!("tokens: {:?}", &tokens);
         }
         let mut parser = Parser::new(source.chars().collect(), tokens);
-        let ast = parser.parse();
+        let ast = parser.parse()?;
         if args.verbose {
             eprintln!("AST: {:?}", &ast);
         }
