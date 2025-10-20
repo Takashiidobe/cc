@@ -523,25 +523,14 @@ impl Parser {
     fn parse_array_size(&mut self) -> usize {
         let token = self.peek();
         match token.kind.clone() {
-            TokenKind::Integer(n) => {
+            TokenKind::Integer(n) | TokenKind::LongInteger(n) => {
                 if n < 0 {
                     panic!("array size must be non-negative");
                 }
                 self.advance();
                 usize::try_from(n).expect("array size does not fit in usize")
             }
-            TokenKind::LongInteger(n) => {
-                if n < 0 {
-                    panic!("array size must be non-negative");
-                }
-                self.advance();
-                usize::try_from(n).expect("array size does not fit in usize")
-            }
-            TokenKind::UnsignedInteger(n) => {
-                self.advance();
-                usize::try_from(n).expect("array size does not fit in usize")
-            }
-            TokenKind::UnsignedLongInteger(n) => {
+            TokenKind::UnsignedInteger(n) | TokenKind::UnsignedLongInteger(n) => {
                 self.advance();
                 usize::try_from(n).expect("array size does not fit in usize")
             }

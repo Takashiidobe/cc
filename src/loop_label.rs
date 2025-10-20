@@ -1,4 +1,4 @@
-use crate::parse::{Decl, DeclKind, ForInit, FunctionDecl, Program, Stmt, StmtKind};
+use crate::parse::{Decl, DeclKind, FunctionDecl, Program, Stmt, StmtKind};
 
 #[derive(Default)]
 pub struct LoopLabeler {
@@ -100,14 +100,11 @@ impl LoopLabeler {
                 body,
                 loop_id: _,
             } => {
-                let loop_id = self.next_loop_id();
-                self.loop_stack.push(loop_id);
-                let body = Box::new(self.label_stmt(*body));
-                self.loop_stack.pop();
+                let (loop_id, body) = self.loop_body(body);
                 StmtKind::While {
                     condition,
                     body,
-                    loop_id: Some(loop_id),
+                    loop_id,
                 }
             }
             StmtKind::DoWhile {
@@ -115,14 +112,11 @@ impl LoopLabeler {
                 condition,
                 loop_id: _,
             } => {
-                let loop_id = self.next_loop_id();
-                self.loop_stack.push(loop_id);
-                let body = Box::new(self.label_stmt(*body));
-                self.loop_stack.pop();
+                let (loop_id, body) = self.loop_body(body);
                 StmtKind::DoWhile {
                     body,
                     condition,
-                    loop_id: Some(loop_id),
+                    loop_id,
                 }
             }
             StmtKind::For {
@@ -132,17 +126,13 @@ impl LoopLabeler {
                 body,
                 loop_id: _,
             } => {
-                let init = self.label_for_init(init);
-                let loop_id = self.next_loop_id();
-                self.loop_stack.push(loop_id);
-                let body = Box::new(self.label_stmt(*body));
-                self.loop_stack.pop();
+                let (loop_id, body) = self.loop_body(body);
                 StmtKind::For {
                     init,
                     condition,
                     post,
                     body,
-                    loop_id: Some(loop_id),
+                    loop_id,
                 }
             }
             StmtKind::Break { loop_id: _ } => {
@@ -174,11 +164,12 @@ impl LoopLabeler {
         }
     }
 
-    fn label_for_init(&mut self, init: ForInit) -> ForInit {
-        match init {
-            ForInit::Declaration(decl) => ForInit::Declaration(Box::new(self.label_stmt(*decl))),
-            ForInit::Expr(expr) => ForInit::Expr(expr),
-        }
+    fn loop_body(&mut self, body: Box<Stmt>) -> (Option<usize>, Box<Stmt>) {
+        let loop_id = self.next_loop_id();
+        self.loop_stack.push(loop_id);
+        let body = Box::new(self.label_stmt(*body));
+        self.loop_stack.pop();
+        (Some(loop_id), body)
     }
 
     fn next_loop_id(&mut self) -> usize {
