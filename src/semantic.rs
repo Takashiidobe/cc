@@ -1,6 +1,7 @@
+#![allow(clippy::result_large_err)]
+
 use std::collections::BTreeMap;
 
-use anyhow::Result;
 use thiserror::Error;
 
 use crate::{
@@ -13,17 +14,19 @@ use crate::{
 
 #[derive(Error, Debug)]
 pub enum SemanticError {
-    #[error("Cannot cast to `{0}`")]
-    CastTo(Type),
+    #[error("Cannot cast `{0:?}` to `{1:?}`")]
+    ExprCastError(Expr, Type),
+    #[error("Cannot cast from type `{0:?}` to `{1:?}`")]
+    CastToError(Type, Type),
     #[error("{0}")]
     Unsupported(String),
-    #[error("Variable `{0}` cannot be type `{1}`")]
+    #[error("Variable `{0}` cannot be type `{1:?}`")]
     InvalidVarType(String, Type),
-    #[error("Param `{0}` cannot be type `{1}`")]
+    #[error("Param `{0}` cannot be type `{1:?}`")]
     InvalidParamType(String, Type),
-    #[error("Cannot dereference type: `{0}`")]
+    #[error("Cannot dereference type: `{0:?}`")]
     DereferenceError(Type),
-    #[error("String literal cannot initialize type {0}")]
+    #[error("String literal cannot initialize type {0:?}")]
     InvalidStringLiteral(Type),
     #[error("Function '{0}' called with invalid arguments (expected {1:?}, got {2:?})")]
     InvalidFunctionArguments(String, Vec<Type>, Vec<Type>),
@@ -31,6 +34,45 @@ pub enum SemanticError {
     UndeclaredIdentifier(String),
     #[error("Invalid Binary Expression: {0:?} {1:?} {2:?}")]
     InvalidBinaryExpr(Expr, TokenKind, Expr),
+
+    #[error("function '{0}' declared with array return type")]
+    FunctionArrayReturnType(String),
+
+    #[error("array variable '{0}' requires a string literal initializer")]
+    ArrayVarRequiresStringInitializer(String),
+
+    #[error("{0} requires integer type, found {1:?}")]
+    IntegerTypeRequired(&'static str, Type),
+
+    #[error("{0} requires numeric type, found {1:?}")]
+    NumericTypeRequired(&'static str, Type),
+
+    #[error("{0} requires scalar (int or pointer) type, found {1:?}")]
+    ScalarTypeRequired(&'static str, Type),
+
+    #[error("{0} requires compatible types ({1:?} <- {2:?})")]
+    IncompatibleForContext(&'static str, Type, Type),
+
+    #[error("{0} requires pointer operand, found {1:?}")]
+    PointerOperandRequired(&'static str, Type),
+
+    #[error("{0} requires pointer to sized type, found {1:?}")]
+    PointerSizedBaseRequired(&'static str, Type),
+
+    #[error("conditional operator requires compatible types ({0:?} vs {1:?})")]
+    ConditionalTypeMismatch(Type, Type),
+
+    #[error("pointer subtraction requires identical pointer types ({0:?} vs {1:?})")]
+    PointerSubTypeMismatch(Type, Type),
+
+    #[error("function '{0}' called with wrong number of arguments (expected {1}, got {2})")]
+    WrongArgCount(String, usize, usize),
+
+    #[error("{0} requires lvalue")]
+    LValueRequired(&'static str),
+
+    #[error("type has no integer rank: {0:?}")]
+    NoIntegerRank(Type),
 }
 
 #[derive(Clone)]
@@ -74,7 +116,7 @@ impl SemanticAnalyzer {
                 }
                 DeclKind::Function(func) => {
                     if Self::is_array_type(&func.return_type) {
-                        panic!("function '{}' declared with array return type", func.name);
+                        return Err(SemanticError::FunctionArrayReturnType(func.name.clone()));
                     }
                     let signature = FunctionSignature {
                         return_type: func.return_type.clone(),
@@ -92,8 +134,8 @@ impl SemanticAnalyzer {
         let decls = program
             .0
             .into_iter()
-            .map(|decl| self.analyze_decl(decl)?)
-            .collect();
+            .map(|decl| self.analyze_decl(decl))
+            .collect::<Result<Vec<_>, _>>()?;
         self.exit_scope();
         Ok(Program(decls))
     }
@@ -136,7 +178,7 @@ impl SemanticAnalyzer {
                 let mut unique_params = Vec::new();
                 for param in params {
                     if param.r#type == Type::Void {
-                        return Err(SemanticError::InvalidParamType(param.name, param.r#type));
+                        return Err(SemanticError::InvalidParamType(param.name, Type::Void));
                     }
 
                     let adjusted_type = self.adjust_parameter_type(param.r#type.clone());
@@ -156,8 +198,8 @@ impl SemanticAnalyzer {
 
                 let body = body_stmts
                     .into_iter()
-                    .map(|stmt| self.analyze_stmt(stmt)?)
-                    .collect();
+                    .map(|stmt| self.analyze_stmt(stmt))
+                    .collect::<Result<Vec<_>, _>>()?;
 
                 self.exit_scope();
                 self.current_return_type = prev_return;
@@ -203,17 +245,16 @@ impl SemanticAnalyzer {
                     // handled during IR generation
                 }
                 (Type::Array(_, _), _) => {
-                    panic!(
-                        "array variable '{}' requires a string literal initializer",
-                        decl.name
-                    );
+                    return Err(SemanticError::ArrayVarRequiresStringInitializer(
+                        decl.name.clone(),
+                    ));
                 }
                 (_, ExprKind::String(_)) => {
                     if !matches!(
                         &decl.r#type,
                         Type::Pointer(inner) if Self::is_char_type(inner.as_ref())
                     ) {
-                        return Err(SemanticError::InvalidStringLiteral(decl.r#type));
+                        return Err(SemanticError::InvalidStringLiteral(decl.r#type.clone()));
                     }
                 }
                 _ => {
@@ -221,12 +262,12 @@ impl SemanticAnalyzer {
                         &decl.r#type,
                         &analyzed.r#type,
                         "variable initialization",
-                    );
+                    )?;
                 }
             }
             Ok(analyzed)
         });
-        decl.init = init?;
+        decl.init = init.transpose()?; // Option<Result<..>> -> Result<Option<..>>
 
         Ok(decl)
     }
@@ -248,18 +289,16 @@ impl SemanticAnalyzer {
                     // handled later during IR lowering
                 }
                 (Type::Array(_, _), _) => {
-                    // Err(SemanticError::)
-                    // panic!(
-                    //     "array variable '{}' requires a string literal initializer",
-                    //     decl.name
-                    // );
+                    return Err(SemanticError::ArrayVarRequiresStringInitializer(
+                        decl.name.clone(),
+                    ));
                 }
                 (_, ExprKind::String(_)) => {
                     if !matches!(
                         &decl.r#type,
                         Type::Pointer(inner) if Self::is_char_type(inner.as_ref())
                     ) {
-                        return Err(SemanticError::InvalidStringLiteral(decl.r#type));
+                        return Err(SemanticError::InvalidStringLiteral(decl.r#type.clone()));
                     }
                 }
                 _ => {
@@ -267,12 +306,14 @@ impl SemanticAnalyzer {
                         &decl.r#type,
                         &analyzed.r#type,
                         "variable initialization",
-                    );
+                    )?;
                 }
             }
             Ok(analyzed)
         });
-        decl.init = Some(init.unwrap()?);
+        if let Some(r) = init {
+            decl.init = Some(r?);
+        }
 
         match decl.storage_class {
             Some(StorageClass::Extern) => {
@@ -285,11 +326,9 @@ impl SemanticAnalyzer {
                 );
                 Ok(decl)
             }
-            Some(StorageClass::Static) => {
-                return Err(SemanticError::Unsupported(
-                    "static local variables are not supported yet".to_string(),
-                ));
-            }
+            Some(StorageClass::Static) => Err(SemanticError::Unsupported(
+                "static local variables are not supported yet".to_string(),
+            )),
             None => {
                 let original = decl.name.clone();
                 let unique = self.fresh_name(&original);
@@ -319,14 +358,17 @@ impl SemanticAnalyzer {
             StmtKind::Return(expr) => {
                 let expr = self.analyze_expr(expr)?;
                 if let Some(expected) = &self.current_return_type {
-                    self.ensure_assignable(expected, &expr.r#type, "return statement");
+                    self.ensure_assignable(expected, &expr.r#type, "return statement")?;
                 }
                 StmtKind::Return(expr)
             }
             StmtKind::Expr(expr) => StmtKind::Expr(self.analyze_expr(expr)?),
             StmtKind::Compound(stmts) => {
                 self.enter_scope();
-                let stmts = stmts.into_iter().map(|s| self.analyze_stmt(s)).collect();
+                let stmts = stmts
+                    .into_iter()
+                    .map(|s| self.analyze_stmt(s))
+                    .collect::<Result<Vec<_>, _>>()?;
                 self.exit_scope();
                 StmtKind::Compound(stmts)
             }
@@ -341,11 +383,14 @@ impl SemanticAnalyzer {
                 else_branch,
             } => {
                 let condition = self.analyze_expr(condition)?;
-                self.ensure_condition_type(&condition.r#type, "if condition");
+                self.ensure_condition_type(&condition.r#type, "if condition")?;
                 StmtKind::If {
                     condition,
                     then_branch: Box::new(self.analyze_stmt(*then_branch)?),
-                    else_branch: else_branch.map(|stmt| Box::new(self.analyze_stmt(*stmt))),
+                    else_branch: else_branch
+                        .map(|stmt| self.analyze_stmt(*stmt))
+                        .transpose()?
+                        .map(Box::new),
                 }
             }
             StmtKind::While {
@@ -354,7 +399,7 @@ impl SemanticAnalyzer {
                 loop_id,
             } => {
                 let condition = self.analyze_expr(condition)?;
-                self.ensure_condition_type(&condition.r#type, "while condition");
+                self.ensure_condition_type(&condition.r#type, "while condition")?;
                 StmtKind::While {
                     condition,
                     body: Box::new(self.analyze_stmt(*body)?),
@@ -367,7 +412,7 @@ impl SemanticAnalyzer {
                 loop_id,
             } => {
                 let condition = self.analyze_expr(condition)?;
-                self.ensure_condition_type(&condition.r#type, "do-while condition");
+                self.ensure_condition_type(&condition.r#type, "do-while condition")?;
                 StmtKind::DoWhile {
                     body: Box::new(self.analyze_stmt(*body)?),
                     condition,
@@ -382,13 +427,15 @@ impl SemanticAnalyzer {
                 loop_id,
             } => {
                 self.enter_scope();
-                let init = self.analyze_for_init(init);
-                let condition = condition.map(|expr| {
-                    let analyzed = self.analyze_expr(expr)?;
-                    self.ensure_condition_type(&analyzed.r#type, "for condition");
-                    analyzed
-                });
-                let post = post.map(|expr| self.analyze_expr(expr)?);
+                let init = self.analyze_for_init(init)?;
+                let condition = condition
+                    .map(|expr| {
+                        let analyzed = self.analyze_expr(expr)?;
+                        self.ensure_condition_type(&analyzed.r#type, "for condition")?;
+                        Ok(analyzed)
+                    })
+                    .transpose()?;
+                let post = post.map(|expr| self.analyze_expr(expr)).transpose()?;
                 let body = Box::new(self.analyze_stmt(*body)?);
                 self.exit_scope();
                 StmtKind::For {
@@ -412,7 +459,7 @@ impl SemanticAnalyzer {
         })
     }
 
-    fn analyze_expr(&mut self, expr: Expr) -> Result<Expr, SemanticError> {
+    pub fn analyze_expr(&mut self, expr: Expr) -> Result<Expr, SemanticError> {
         self.analyze_expr_internal(expr, true)
     }
 
@@ -433,7 +480,7 @@ impl SemanticAnalyzer {
             r#type: _,
         } = expr;
 
-        let result = match kind {
+        let result: Expr = match kind {
             ExprKind::Constant(c) => {
                 let ty = match &c {
                     Const::Char(_) => Type::Int,
@@ -444,44 +491,41 @@ impl SemanticAnalyzer {
                     Const::ULong(_) => Type::ULong,
                     Const::Double(_) => Type::Double,
                 };
-                Ok(Expr {
+                Expr {
                     kind: ExprKind::Constant(c),
                     start,
                     end,
                     source,
                     r#type: ty,
-                })
+                }
             }
-            ExprKind::String(value) => Ok(Expr {
+            ExprKind::String(value) => Expr {
                 kind: ExprKind::String(value),
                 start,
                 end,
                 source,
                 r#type: Type::Pointer(Box::new(Type::Char)),
-            }),
+            },
             ExprKind::Var(name) => {
                 let symbol = self.lookup_symbol(&name)?;
-                Ok(Expr {
+                Expr {
                     kind: ExprKind::Var(symbol.unique.clone()),
                     start,
                     end,
                     source,
                     r#type: symbol.ty.clone(),
-                })
+                }
             }
             ExprKind::FunctionCall(name, args) => {
-                let signature = self
-                    .functions
-                    .get(&name)
-                    .cloned()
-                    .unwrap_or_else(|| panic!("call to undeclared function {name}"));
+                let Some(signature) = self.functions.get(&name).cloned() else {
+                    return Err(SemanticError::UndeclaredIdentifier(name));
+                };
                 if args.len() != signature.param_types.len() {
-                    panic!(
-                        "function '{}' called with wrong number of arguments (expected {}, got {})",
-                        name,
+                    return Err(SemanticError::WrongArgCount(
+                        name.clone(),
                         signature.param_types.len(),
-                        args.len()
-                    );
+                        args.len(),
+                    ));
                 }
 
                 let analyzed_args = args
@@ -489,80 +533,84 @@ impl SemanticAnalyzer {
                     .zip(signature.param_types.iter())
                     .map(|(arg, expected)| {
                         let expr = self.analyze_expr(arg)?;
-                        self.ensure_assignable(expected, &expr.r#type, "function argument");
-                        expr
+                        self.ensure_assignable(expected, &expr.r#type, "function argument")?;
+                        Ok(expr)
                     })
-                    .collect();
+                    .collect::<Result<Vec<_>, _>>()?;
 
-                Ok(Expr {
+                Expr {
                     kind: ExprKind::FunctionCall(name, analyzed_args),
                     start,
                     end,
                     source,
                     r#type: signature.return_type,
-                })
+                }
             }
-            ExprKind::Cast(target, expr) => {
-                if target == Type::Void {
-                    return Err(SemanticError::CastTo(Type::Void));
-                }
+            ExprKind::Cast(target, expr0) => {
+                // Analyze source first so we can give a precise from->to in the error.
+                let expr1 = self.analyze_expr(*expr0)?;
+                // Forbid casting to arrays
                 if Self::is_array_type(&target) {
-                    panic!("cannot cast to array type");
+                    return Err(SemanticError::CastToError(
+                        self.decay_array_type(&expr1.r#type),
+                        target,
+                    ));
                 }
-
-                let expr = self.analyze_expr(*expr)?;
-                self.ensure_castable(&expr.r#type, &target);
+                self.ensure_castable(&expr1.r#type, &target)?;
                 let ty = target.clone();
-                Ok(Expr {
-                    kind: ExprKind::Cast(ty.clone(), Box::new(expr)),
+                Expr {
+                    kind: ExprKind::Cast(ty.clone(), Box::new(expr1)),
                     start,
                     end,
                     source,
                     r#type: ty,
-                })
+                }
             }
-            ExprKind::Neg(expr) => {
-                self.analyze_arithmetic_unary(*expr, start, end, source, ExprKind::Neg)
+            ExprKind::Neg(expr0) => {
+                self.analyze_arithmetic_unary(*expr0, start, end, source.clone(), ExprKind::Neg)?
             }
-            ExprKind::BitNot(expr) => {
-                Ok(self.analyze_integer_unary(*expr, start, end, source, ExprKind::BitNot))
+            ExprKind::BitNot(expr0) => {
+                self.analyze_integer_unary(*expr0, start, end, source.clone(), ExprKind::BitNot)?
             }
-            ExprKind::Not(expr) => {
-                let expr = self.analyze_expr(*expr)?;
-                self.ensure_condition_type(&expr.r#type, "logical not");
+            ExprKind::Not(expr0) => {
+                let expr1 = self.analyze_expr(*expr0)?;
+                self.ensure_condition_type(&expr1.r#type, "logical not")?;
                 Expr {
-                    kind: ExprKind::Not(Box::new(expr)),
+                    kind: ExprKind::Not(Box::new(expr1)),
                     start,
                     end,
                     source,
                     r#type: Type::Int,
                 }
             }
-            ExprKind::AddrOf(expr) => {
-                let expr = self.analyze_expr_no_decay(*expr)?;
-                self.ensure_lvalue(&expr, "address-of operand");
-                let ty = Type::Pointer(Box::new(expr.r#type.clone()));
+            ExprKind::AddrOf(expr0) => {
+                let expr1 = self.analyze_expr_no_decay(*expr0)?;
+                self.ensure_lvalue(&expr1, "address-of operand")?;
+                let ty = Type::Pointer(Box::new(expr1.r#type.clone()));
                 Expr {
-                    kind: ExprKind::AddrOf(Box::new(expr)),
+                    kind: ExprKind::AddrOf(Box::new(expr1)),
                     start,
                     end,
                     source,
                     r#type: ty,
                 }
             }
-            ExprKind::Dereference(expr) => {
-                let expr = self.analyze_expr(*expr)?;
-                let ty = match &expr.r#type {
-                    Type::Pointer(inner) => {
-                        if matches!(inner.as_ref(), Type::Void) {
-                            panic!("cannot dereference void pointer");
+            ExprKind::Dereference(expr0) => {
+                let expr1 = self.analyze_expr(*expr0)?;
+                let ty = match &expr1.r#type {
+                    Type::Pointer(inner) => match inner.as_ref() {
+                        Type::Void => {
+                            return Err(SemanticError::PointerSizedBaseRequired(
+                                "dereference",
+                                (*inner).as_ref().clone(),
+                            ));
                         }
-                        inner.as_ref().clone()
-                    }
-                    other => panic!("cannot dereference non-pointer type {other:?}"),
+                        other => other.clone(),
+                    },
+                    other => return Err(SemanticError::DereferenceError(other.clone())),
                 };
                 Expr {
-                    kind: ExprKind::Dereference(Box::new(expr)),
+                    kind: ExprKind::Dereference(Box::new(expr1)),
                     start,
                     end,
                     source,
@@ -571,7 +619,7 @@ impl SemanticAnalyzer {
             }
             ExprKind::Conditional(cond, then_expr, else_expr) => {
                 let cond = self.analyze_expr(*cond)?;
-                self.ensure_condition_type(&cond.r#type, "conditional condition");
+                self.ensure_condition_type(&cond.r#type, "conditional condition")?;
                 let then_expr = self.analyze_expr(*then_expr)?;
                 let else_expr = self.analyze_expr(*else_expr)?;
                 let then_type = then_expr.r#type.clone();
@@ -579,20 +627,14 @@ impl SemanticAnalyzer {
                 let result_type = if Self::is_numeric_type(&then_type)
                     && Self::is_numeric_type(&else_type)
                 {
-                    self.numeric_result_type(&then_type, &else_type)
+                    self.numeric_result_type(&then_type, &else_type)?
                 } else if Self::is_pointer_type(&then_type) && Self::is_pointer_type(&else_type) {
                     if !Self::pointer_types_compatible(&then_type, &else_type) {
-                        panic!(
-                            "conditional operator requires compatible pointer types ({:?} vs {:?})",
-                            then_type, else_type
-                        );
+                        return Err(SemanticError::ConditionalTypeMismatch(then_type, else_type));
                     }
                     then_type.clone()
                 } else {
-                    panic!(
-                        "conditional operator requires numeric or pointer operands ({:?} vs {:?})",
-                        then_type, else_type
-                    );
+                    return Err(SemanticError::ConditionalTypeMismatch(then_type, else_type));
                 };
 
                 Expr {
@@ -607,55 +649,90 @@ impl SemanticAnalyzer {
                     r#type: result_type,
                 }
             }
-            ExprKind::Add(lhs, rhs) => self.analyze_add(*lhs, *rhs, start, end, source),
-            ExprKind::Sub(lhs, rhs) => self.analyze_sub(*lhs, *rhs, start, end, source),
-            ExprKind::Mul(lhs, rhs) => {
-                self.analyze_arithmetic_binary(*lhs, *rhs, start, end, source, ExprKind::Mul)
-            }
-            ExprKind::Div(lhs, rhs) => {
-                self.analyze_arithmetic_binary(*lhs, *rhs, start, end, source, ExprKind::Div)
-            }
+            ExprKind::Add(lhs, rhs) => self.analyze_add(*lhs, *rhs, start, end, source.clone())?,
+            ExprKind::Sub(lhs, rhs) => self.analyze_sub(*lhs, *rhs, start, end, source.clone())?,
+            ExprKind::Mul(lhs, rhs) => self.analyze_arithmetic_binary(
+                *lhs,
+                *rhs,
+                start,
+                end,
+                source.clone(),
+                ExprKind::Mul,
+            )?,
+            ExprKind::Div(lhs, rhs) => self.analyze_arithmetic_binary(
+                *lhs,
+                *rhs,
+                start,
+                end,
+                source.clone(),
+                ExprKind::Div,
+            )?,
             ExprKind::Rem(lhs, rhs) => {
-                self.analyze_integer_binary(*lhs, *rhs, start, end, source, ExprKind::Rem)
+                self.analyze_integer_binary(*lhs, *rhs, start, end, source.clone(), ExprKind::Rem)?
             }
             ExprKind::Equal(lhs, rhs) => {
-                self.analyze_equality(*lhs, *rhs, start, end, source, ExprKind::Equal)
+                self.analyze_equality(*lhs, *rhs, start, end, source.clone(), ExprKind::Equal)?
             }
             ExprKind::NotEqual(lhs, rhs) => {
-                self.analyze_equality(*lhs, *rhs, start, end, source, ExprKind::NotEqual)
+                self.analyze_equality(*lhs, *rhs, start, end, source.clone(), ExprKind::NotEqual)?
             }
             ExprKind::LessThan(lhs, rhs) => {
-                self.analyze_comparison(*lhs, *rhs, start, end, source, ExprKind::LessThan)
+                self.analyze_comparison(*lhs, *rhs, start, end, source.clone(), ExprKind::LessThan)?
             }
-            ExprKind::LessThanEqual(lhs, rhs) => {
-                self.analyze_comparison(*lhs, *rhs, start, end, source, ExprKind::LessThanEqual)
-            }
-            ExprKind::GreaterThan(lhs, rhs) => {
-                self.analyze_comparison(*lhs, *rhs, start, end, source, ExprKind::GreaterThan)
-            }
-            ExprKind::GreaterThanEqual(lhs, rhs) => {
-                self.analyze_comparison(*lhs, *rhs, start, end, source, ExprKind::GreaterThanEqual)
-            }
+            ExprKind::LessThanEqual(lhs, rhs) => self.analyze_comparison(
+                *lhs,
+                *rhs,
+                start,
+                end,
+                source.clone(),
+                ExprKind::LessThanEqual,
+            )?,
+            ExprKind::GreaterThan(lhs, rhs) => self.analyze_comparison(
+                *lhs,
+                *rhs,
+                start,
+                end,
+                source.clone(),
+                ExprKind::GreaterThan,
+            )?,
+            ExprKind::GreaterThanEqual(lhs, rhs) => self.analyze_comparison(
+                *lhs,
+                *rhs,
+                start,
+                end,
+                source.clone(),
+                ExprKind::GreaterThanEqual,
+            )?,
             ExprKind::Or(lhs, rhs) => {
-                self.analyze_logical_binary(*lhs, *rhs, start, end, source, ExprKind::Or)
+                self.analyze_logical_binary(*lhs, *rhs, start, end, source.clone(), ExprKind::Or)?
             }
             ExprKind::And(lhs, rhs) => {
-                self.analyze_logical_binary(*lhs, *rhs, start, end, source, ExprKind::And)
+                self.analyze_logical_binary(*lhs, *rhs, start, end, source.clone(), ExprKind::And)?
             }
-            ExprKind::BitAnd(lhs, rhs) => {
-                self.analyze_integer_binary(*lhs, *rhs, start, end, source, ExprKind::BitAnd)
-            }
+            ExprKind::BitAnd(lhs, rhs) => self.analyze_integer_binary(
+                *lhs,
+                *rhs,
+                start,
+                end,
+                source.clone(),
+                ExprKind::BitAnd,
+            )?,
             ExprKind::Xor(lhs, rhs) => {
-                self.analyze_integer_binary(*lhs, *rhs, start, end, source, ExprKind::Xor)
+                self.analyze_integer_binary(*lhs, *rhs, start, end, source.clone(), ExprKind::Xor)?
             }
-            ExprKind::BitOr(lhs, rhs) => {
-                self.analyze_integer_binary(*lhs, *rhs, start, end, source, ExprKind::BitOr)
-            }
+            ExprKind::BitOr(lhs, rhs) => self.analyze_integer_binary(
+                *lhs,
+                *rhs,
+                start,
+                end,
+                source.clone(),
+                ExprKind::BitOr,
+            )?,
             ExprKind::LeftShift(lhs, rhs) => {
                 let lhs = self.analyze_expr(*lhs)?;
                 let rhs = self.analyze_expr(*rhs)?;
-                self.ensure_integer_type(&lhs.r#type, "shift operand");
-                self.ensure_integer_type(&rhs.r#type, "shift amount");
+                self.ensure_integer_type(&lhs.r#type, "shift operand")?;
+                self.ensure_integer_type(&rhs.r#type, "shift amount")?;
                 let ty = lhs.r#type.clone();
                 Expr {
                     kind: ExprKind::LeftShift(Box::new(lhs), Box::new(rhs)),
@@ -668,8 +745,8 @@ impl SemanticAnalyzer {
             ExprKind::RightShift(lhs, rhs) => {
                 let lhs = self.analyze_expr(*lhs)?;
                 let rhs = self.analyze_expr(*rhs)?;
-                self.ensure_integer_type(&lhs.r#type, "shift operand");
-                self.ensure_integer_type(&rhs.r#type, "shift amount");
+                self.ensure_integer_type(&lhs.r#type, "shift operand")?;
+                self.ensure_integer_type(&rhs.r#type, "shift amount")?;
                 let ty = lhs.r#type.clone();
                 Expr {
                     kind: ExprKind::RightShift(Box::new(lhs), Box::new(rhs)),
@@ -681,13 +758,15 @@ impl SemanticAnalyzer {
             }
             ExprKind::Assignment(lhs, rhs) => {
                 let lhs = self.analyze_expr_no_decay(*lhs)?;
-                self.ensure_lvalue(&lhs, "assignment left-hand side");
+                self.ensure_lvalue(&lhs, "assignment left-hand side")?;
                 if Self::is_array_type(&lhs.r#type) {
-                    panic!("assignment to array type is not allowed");
+                    return Err(SemanticError::Unsupported(
+                        "assignment to array type is not allowed".to_string(),
+                    ));
                 }
                 let lhs_type = lhs.r#type.clone();
                 let rhs = self.analyze_expr(*rhs)?;
-                self.ensure_assignable(&lhs_type, &rhs.r#type, "assignment");
+                self.ensure_assignable(&lhs_type, &rhs.r#type, "assignment")?;
                 Expr {
                     kind: ExprKind::Assignment(Box::new(lhs), Box::new(rhs)),
                     start,
@@ -696,52 +775,52 @@ impl SemanticAnalyzer {
                     r#type: lhs_type,
                 }
             }
-            ExprKind::PreIncrement(expr) => {
-                let expr = self.analyze_expr_no_decay(*expr)?;
-                self.ensure_lvalue(&expr, "pre-increment target");
-                self.ensure_numeric_type(&expr.r#type, "pre-increment operand");
-                let ty = expr.r#type.clone();
+            ExprKind::PreIncrement(expr0) => {
+                let expr1 = self.analyze_expr_no_decay(*expr0)?;
+                self.ensure_lvalue(&expr1, "pre-increment target")?;
+                self.ensure_numeric_type(&expr1.r#type, "pre-increment operand")?;
+                let ty = expr1.r#type.clone();
                 Expr {
-                    kind: ExprKind::PreIncrement(Box::new(expr)),
+                    kind: ExprKind::PreIncrement(Box::new(expr1)),
                     start,
                     end,
                     source,
                     r#type: ty,
                 }
             }
-            ExprKind::PreDecrement(expr) => {
-                let expr = self.analyze_expr_no_decay(*expr)?;
-                self.ensure_lvalue(&expr, "pre-decrement target");
-                self.ensure_numeric_type(&expr.r#type, "pre-decrement operand");
-                let ty = expr.r#type.clone();
+            ExprKind::PreDecrement(expr0) => {
+                let expr1 = self.analyze_expr_no_decay(*expr0)?;
+                self.ensure_lvalue(&expr1, "pre-decrement target")?;
+                self.ensure_numeric_type(&expr1.r#type, "pre-decrement operand")?;
+                let ty = expr1.r#type.clone();
                 Expr {
-                    kind: ExprKind::PreDecrement(Box::new(expr)),
+                    kind: ExprKind::PreDecrement(Box::new(expr1)),
                     start,
                     end,
                     source,
                     r#type: ty,
                 }
             }
-            ExprKind::PostIncrement(expr) => {
-                let expr = self.analyze_expr_no_decay(*expr)?;
-                self.ensure_lvalue(&expr, "post-increment target");
-                self.ensure_numeric_type(&expr.r#type, "post-increment operand");
-                let ty = expr.r#type.clone();
+            ExprKind::PostIncrement(expr0) => {
+                let expr1 = self.analyze_expr_no_decay(*expr0)?;
+                self.ensure_lvalue(&expr1, "post-increment target")?;
+                self.ensure_numeric_type(&expr1.r#type, "post-increment operand")?;
+                let ty = expr1.r#type.clone();
                 Expr {
-                    kind: ExprKind::PostIncrement(Box::new(expr)),
+                    kind: ExprKind::PostIncrement(Box::new(expr1)),
                     start,
                     end,
                     source,
                     r#type: ty,
                 }
             }
-            ExprKind::PostDecrement(expr) => {
-                let expr = self.analyze_expr_no_decay(*expr)?;
-                self.ensure_lvalue(&expr, "post-decrement target");
-                self.ensure_numeric_type(&expr.r#type, "post-decrement operand");
-                let ty = expr.r#type.clone();
+            ExprKind::PostDecrement(expr0) => {
+                let expr1 = self.analyze_expr_no_decay(*expr0)?;
+                self.ensure_lvalue(&expr1, "post-decrement target")?;
+                self.ensure_numeric_type(&expr1.r#type, "post-decrement operand")?;
+                let ty = expr1.r#type.clone();
                 Expr {
-                    kind: ExprKind::PostDecrement(Box::new(expr)),
+                    kind: ExprKind::PostDecrement(Box::new(expr1)),
                     start,
                     end,
                     source,
@@ -753,21 +832,21 @@ impl SemanticAnalyzer {
         Ok(self.apply_array_decay(result, decay_arrays))
     }
 
-    fn analyze_for_init(&mut self, init: ForInit) -> ForInit {
+    fn analyze_for_init(&mut self, init: ForInit) -> Result<ForInit, SemanticError> {
         match init {
-            ForInit::Declaration(stmt) => ForInit::Declaration(Box::new(self.analyze_stmt(*stmt)?)),
-            ForInit::Expr(expr) => ForInit::Expr(
-                expr.map(|e| self.analyze_expr(e).map_err(|e| e.to_string()))
-                    .iter()
-                    .collect(),
-            ),
+            ForInit::Declaration(stmt) => {
+                Ok(ForInit::Declaration(Box::new(self.analyze_stmt(*stmt)?)))
+            }
+            ForInit::Expr(expr_opt) => Ok(ForInit::Expr(
+                expr_opt.map(|e| self.analyze_expr(e)).transpose()?,
+            )),
         }
     }
 
-    fn ensure_lvalue(&self, expr: &Expr, context: &str) {
+    fn ensure_lvalue(&self, expr: &Expr, context: &'static str) -> Result<(), SemanticError> {
         match &expr.kind {
-            ExprKind::Var(_) | ExprKind::Dereference(_) => {}
-            _ => panic!("{context} requires an lvalue"),
+            ExprKind::Var(_) | ExprKind::Dereference(_) => Ok(()),
+            _ => Err(SemanticError::LValueRequired(context)),
         }
     }
 
@@ -783,7 +862,7 @@ impl SemanticAnalyzer {
         F: FnOnce(Box<Expr>) -> ExprKind,
     {
         let expr = self.analyze_expr(expr)?;
-        self.ensure_integer_type(&expr.r#type, "unary operator");
+        self.ensure_integer_type(&expr.r#type, "unary operator")?;
         let ty = expr.r#type.clone();
         Ok(Expr {
             kind: constructor(Box::new(expr)),
@@ -806,7 +885,7 @@ impl SemanticAnalyzer {
         F: FnOnce(Box<Expr>) -> ExprKind,
     {
         let expr = self.analyze_expr(expr)?;
-        self.ensure_numeric_type(&expr.r#type, "unary operator");
+        self.ensure_numeric_type(&expr.r#type, "unary operator")?;
         let ty = expr.r#type.clone();
         Ok(Expr {
             kind: constructor(Box::new(expr)),
@@ -831,15 +910,15 @@ impl SemanticAnalyzer {
         let rhs_type = rhs.r#type.clone();
 
         let result_type = if Self::is_numeric_type(&lhs_type) && Self::is_numeric_type(&rhs_type) {
-            self.numeric_result_type(&lhs_type, &rhs_type)
+            self.numeric_result_type(&lhs_type, &rhs_type)?
         } else if Self::is_pointer_type(&lhs_type) && Self::is_integer_type(&rhs_type) {
-            self.pointer_arithmetic_base(&lhs_type, "pointer addition");
+            self.pointer_arithmetic_base(&lhs_type, "pointer addition")?;
             lhs_type.clone()
         } else if Self::is_integer_type(&lhs_type) && Self::is_pointer_type(&rhs_type) {
-            self.pointer_arithmetic_base(&rhs_type, "pointer addition");
+            self.pointer_arithmetic_base(&rhs_type, "pointer addition")?;
             rhs_type.clone()
         } else {
-            return Err(SemanticError::InvalidBinaryExpr(lhs, rhs, TokenKind::Plus));
+            return Err(SemanticError::InvalidBinaryExpr(lhs, TokenKind::Plus, rhs));
         };
 
         Ok(Expr {
@@ -865,25 +944,19 @@ impl SemanticAnalyzer {
         let rhs_type = rhs.r#type.clone();
 
         let result_type = if Self::is_numeric_type(&lhs_type) && Self::is_numeric_type(&rhs_type) {
-            self.numeric_result_type(&lhs_type, &rhs_type)
+            self.numeric_result_type(&lhs_type, &rhs_type)?
         } else if Self::is_pointer_type(&lhs_type) && Self::is_integer_type(&rhs_type) {
-            self.pointer_arithmetic_base(&lhs_type, "pointer subtraction");
+            self.pointer_arithmetic_base(&lhs_type, "pointer subtraction")?;
             lhs_type.clone()
         } else if Self::is_pointer_type(&lhs_type) && Self::is_pointer_type(&rhs_type) {
-            let lhs_base = self.pointer_arithmetic_base(&lhs_type, "pointer subtraction");
-            let rhs_base = self.pointer_arithmetic_base(&rhs_type, "pointer subtraction");
+            let lhs_base = self.pointer_arithmetic_base(&lhs_type, "pointer subtraction")?;
+            let rhs_base = self.pointer_arithmetic_base(&rhs_type, "pointer subtraction")?;
             if lhs_base != rhs_base {
-                panic!(
-                    "pointer subtraction requires identical pointer types ({:?} vs {:?})",
-                    lhs_type, rhs_type
-                );
+                return Err(SemanticError::PointerSubTypeMismatch(lhs_type, rhs_type));
             }
             Type::Long
         } else {
-            panic!(
-                "unsupported operand types {:?} and {:?} in subtraction",
-                lhs_type, rhs_type
-            );
+            return Err(SemanticError::InvalidBinaryExpr(lhs, TokenKind::Minus, rhs));
         };
 
         Ok(Expr {
@@ -909,9 +982,9 @@ impl SemanticAnalyzer {
     {
         let lhs = self.analyze_expr(lhs)?;
         let rhs = self.analyze_expr(rhs)?;
-        self.ensure_integer_type(&lhs.r#type, "binary operand");
-        self.ensure_integer_type(&rhs.r#type, "binary operand");
-        let ty = self.numeric_result_type(&lhs.r#type, &rhs.r#type);
+        self.ensure_integer_type(&lhs.r#type, "binary operand")?;
+        self.ensure_integer_type(&rhs.r#type, "binary operand")?;
+        let ty = self.numeric_result_type(&lhs.r#type, &rhs.r#type)?;
         Ok(Expr {
             kind: constructor(Box::new(lhs), Box::new(rhs)),
             start,
@@ -935,9 +1008,9 @@ impl SemanticAnalyzer {
     {
         let lhs = self.analyze_expr(lhs)?;
         let rhs = self.analyze_expr(rhs)?;
-        self.ensure_numeric_type(&lhs.r#type, "binary operand");
-        self.ensure_numeric_type(&rhs.r#type, "binary operand");
-        let ty = self.numeric_result_type(&lhs.r#type, &rhs.r#type);
+        self.ensure_numeric_type(&lhs.r#type, "binary operand")?;
+        self.ensure_numeric_type(&rhs.r#type, "binary operand")?;
+        let ty = self.numeric_result_type(&lhs.r#type, &rhs.r#type)?;
         Ok(Expr {
             kind: constructor(Box::new(lhs), Box::new(rhs)),
             start,
@@ -962,10 +1035,10 @@ impl SemanticAnalyzer {
         let lhs = self.analyze_expr(lhs)?;
         let rhs = self.analyze_expr(rhs)?;
         if Self::is_pointer_type(&lhs.r#type) || Self::is_pointer_type(&rhs.r#type) {
-            self.ensure_pointer_comparable(&lhs.r#type, &rhs.r#type, "equality comparison");
+            self.ensure_pointer_comparable(&lhs.r#type, &rhs.r#type, "equality comparison")?;
         } else {
-            self.ensure_numeric_type(&lhs.r#type, "comparison operand");
-            self.ensure_numeric_type(&rhs.r#type, "comparison operand");
+            self.ensure_numeric_type(&lhs.r#type, "comparison operand")?;
+            self.ensure_numeric_type(&rhs.r#type, "comparison operand")?;
         }
         Ok(Expr {
             kind: constructor(Box::new(lhs), Box::new(rhs)),
@@ -990,8 +1063,8 @@ impl SemanticAnalyzer {
     {
         let lhs = self.analyze_expr(lhs)?;
         let rhs = self.analyze_expr(rhs)?;
-        self.ensure_numeric_type(&lhs.r#type, "comparison operand");
-        self.ensure_numeric_type(&rhs.r#type, "comparison operand");
+        self.ensure_numeric_type(&lhs.r#type, "comparison operand")?;
+        self.ensure_numeric_type(&rhs.r#type, "comparison operand")?;
         Ok(Expr {
             kind: constructor(Box::new(lhs), Box::new(rhs)),
             start,
@@ -1015,8 +1088,8 @@ impl SemanticAnalyzer {
     {
         let lhs = self.analyze_expr(lhs)?;
         let rhs = self.analyze_expr(rhs)?;
-        self.ensure_condition_type(&lhs.r#type, "logical operand");
-        self.ensure_condition_type(&rhs.r#type, "logical operand");
+        self.ensure_condition_type(&lhs.r#type, "logical operand")?;
+        self.ensure_condition_type(&rhs.r#type, "logical operand")?;
         Ok(Expr {
             kind: constructor(Box::new(lhs), Box::new(rhs)),
             start,
@@ -1026,77 +1099,89 @@ impl SemanticAnalyzer {
         })
     }
 
-    fn numeric_result_type(&self, lhs: &Type, rhs: &Type) -> Type {
+    fn numeric_result_type(&self, lhs: &Type, rhs: &Type) -> Result<Type, SemanticError> {
         if !Self::is_numeric_type(lhs) || !Self::is_numeric_type(rhs) {
-            panic!(
-                "unsupported operand types {:?} and {:?} in numeric expression",
-                lhs, rhs
-            );
+            return Err(SemanticError::IncompatibleForContext(
+                "numeric expression",
+                lhs.clone(),
+                rhs.clone(),
+            ));
         }
 
         if Self::is_floating_type(lhs) || Self::is_floating_type(rhs) {
-            return Type::Double;
+            return Ok(Type::Double);
         }
 
-        if Self::type_rank(lhs) >= Self::type_rank(rhs) {
-            lhs.clone()
-        } else {
-            rhs.clone()
-        }
+        let lr = self.type_rank(lhs)?;
+        let rr = self.type_rank(rhs)?;
+        Ok(if lr >= rr { lhs.clone() } else { rhs.clone() })
     }
 
-    fn ensure_integer_type(&self, ty: &Type, context: &str) {
+    fn ensure_integer_type(&self, ty: &Type, context: &'static str) -> Result<(), SemanticError> {
         let ty = self.decay_array_type(ty);
-        if !Self::is_integer_type(&ty) {
-            panic!("{context} requires integer type, found {:?}", ty);
+        if Self::is_integer_type(&ty) {
+            Ok(())
+        } else {
+            Err(SemanticError::IntegerTypeRequired(context, ty))
         }
     }
 
-    fn ensure_condition_type(&self, ty: &Type, context: &str) {
+    fn ensure_condition_type(&self, ty: &Type, context: &'static str) -> Result<(), SemanticError> {
         let ty = self.decay_array_type(ty);
         if Self::is_integer_type(&ty) || Self::is_pointer_type(&ty) {
-            return;
+            Ok(())
+        } else {
+            Err(SemanticError::ScalarTypeRequired(context, ty))
         }
-        panic!("{context} requires scalar type, found {:?}", ty);
     }
 
-    fn ensure_numeric_type(&self, ty: &Type, context: &str) {
+    fn ensure_numeric_type(&self, ty: &Type, context: &'static str) -> Result<(), SemanticError> {
         let ty = self.decay_array_type(ty);
-        if !Self::is_numeric_type(&ty) {
-            panic!("{context} requires numeric type, found {:?}", ty);
+        if Self::is_numeric_type(&ty) {
+            Ok(())
+        } else {
+            Err(SemanticError::NumericTypeRequired(context, ty))
         }
     }
 
-    fn ensure_assignable(&self, target: &Type, value: &Type, context: &str) {
+    fn ensure_assignable(
+        &self,
+        target: &Type,
+        value: &Type,
+        context: &'static str,
+    ) -> Result<(), SemanticError> {
         if Self::is_array_type(target) {
-            panic!("{context} cannot assign to array type");
+            return Err(SemanticError::Unsupported(format!(
+                "{context} cannot assign to array type"
+            )));
         }
 
         let value_type = self.decay_array_type(value);
 
         if target == &value_type {
-            return;
+            return Ok(());
         }
 
         if Self::is_numeric_type(target) && Self::is_numeric_type(&value_type) {
-            return;
+            return Ok(());
         }
 
         if Self::is_pointer_type(target) {
             if Self::is_pointer_type(&value_type)
                 && Self::pointer_types_compatible(target, &value_type)
             {
-                return;
+                return Ok(());
             }
             if Self::is_integer_type(&value_type) {
-                return;
+                return Ok(());
             }
         }
 
-        panic!(
-            "{context} requires compatible types ({:?} <- {:?})",
-            target, value_type
-        );
+        Err(SemanticError::IncompatibleForContext(
+            context,
+            target.clone(),
+            value_type,
+        ))
     }
 
     fn is_integer_type(ty: &Type) -> bool {
@@ -1128,45 +1213,36 @@ impl SemanticAnalyzer {
         matches!(ty, Type::Char | Type::SChar | Type::UChar)
     }
 
-    fn ensure_castable(&self, from: &Type, to: &Type) {
-        if Self::is_array_type(to) {
-            panic!("cannot cast to array type");
-        }
-
+    fn ensure_castable(&self, from: &Type, to: &Type) -> Result<(), SemanticError> {
         let from_type = self.decay_array_type(from);
         let to_type = self.decay_array_type(to);
 
-        // if both are numeric types
-        // or if both are pointers
-        // or if one is pointer or one is integer
-        if Self::is_numeric_type(&from_type) && Self::is_numeric_type(&to_type) {
-            return;
+        if (Self::is_numeric_type(&from_type) && Self::is_numeric_type(&to_type))
+            || (Self::is_pointer_type(&from_type) && Self::is_pointer_type(&to_type))
+            || (Self::is_pointer_type(&from_type) && Self::is_integer_type(&to_type))
+            || (Self::is_integer_type(&from_type) && Self::is_pointer_type(&to_type))
+        {
+            return Ok(());
         }
-        if Self::is_pointer_type(&from_type) && Self::is_pointer_type(&to_type) {
-            return;
-        }
-        if Self::is_pointer_type(&from_type) && Self::is_integer_type(&to_type) {
-            return;
-        }
-        if Self::is_integer_type(&from_type) && Self::is_pointer_type(&to_type) {
-            return;
-        }
-        panic!("unsupported cast {:?} -> {:?}", from_type, to_type);
+
+        Err(SemanticError::CastToError(from_type, to_type))
     }
 
-    fn type_rank(ty: &Type) -> usize {
-        match ty {
+    fn type_rank(&self, ty: &Type) -> Result<usize, SemanticError> {
+        let r = match ty {
             Type::Char | Type::SChar => 0,
             Type::UChar => 1,
             Type::Int => 2,
             Type::UInt => 3,
             Type::Long => 4,
             Type::ULong => 5,
-            Type::Void => panic!("void type has no integer rank"),
-            Type::Double => panic!("double type has no integer rank"),
-            Type::Pointer(_) | Type::FunType(_, _) => panic!("pointer type has no integer rank"),
-            Type::Array(_, _) => panic!("array type has no integer rank"),
-        }
+            Type::Void
+            | Type::Double
+            | Type::Pointer(_)
+            | Type::FunType(_, _)
+            | Type::Array(_, _) => return Err(SemanticError::NoIntegerRank(ty.clone())),
+        };
+        Ok(r)
     }
 
     fn pointer_types_compatible(lhs: &Type, rhs: &Type) -> bool {
@@ -1182,34 +1258,50 @@ impl SemanticAnalyzer {
         }
     }
 
-    fn ensure_pointer_comparable(&self, lhs: &Type, rhs: &Type, context: &str) {
+    fn ensure_pointer_comparable(
+        &self,
+        lhs: &Type,
+        rhs: &Type,
+        context: &'static str,
+    ) -> Result<(), SemanticError> {
         let lhs_type = self.decay_array_type(lhs);
         let rhs_type = self.decay_array_type(rhs);
 
         if Self::is_pointer_type(&lhs_type) && Self::is_pointer_type(&rhs_type) {
             if Self::pointer_types_compatible(&lhs_type, &rhs_type) {
-                return;
+                return Ok(());
             }
+            return Err(SemanticError::IncompatibleForContext(
+                context, lhs_type, rhs_type,
+            ));
         } else if (Self::is_pointer_type(&lhs_type) && Self::is_integer_type(&rhs_type))
             || (Self::is_integer_type(&lhs_type) && Self::is_pointer_type(&rhs_type))
         {
-            return;
+            return Ok(());
         }
 
-        panic!(
-            "{context} requires compatible pointer types ({:?} vs {:?})",
-            lhs_type, rhs_type
-        );
+        Err(SemanticError::IncompatibleForContext(
+            context, lhs_type, rhs_type,
+        ))
     }
 
-    fn pointer_arithmetic_base<'a>(&self, ty: &'a Type, context: &str) -> &'a Type {
+    fn pointer_arithmetic_base<'a>(
+        &self,
+        ty: &'a Type,
+        context: &'static str,
+    ) -> Result<&'a Type, SemanticError> {
         match ty {
             Type::Pointer(inner) => match inner.as_ref() {
-                Type::Void => panic!("{context} requires pointer to sized type"),
-                Type::FunType(_, _) => panic!("{context} requires pointer to sized type"),
-                base => base,
+                Type::Void | Type::FunType(_, _) => Err(SemanticError::PointerSizedBaseRequired(
+                    context,
+                    (*inner).as_ref().clone(),
+                )),
+                base => Ok(base),
             },
-            _ => panic!("{context} requires pointer operand"),
+            other => Err(SemanticError::PointerOperandRequired(
+                context,
+                other.clone(),
+            )),
         }
     }
 

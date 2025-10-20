@@ -11,8 +11,7 @@ fn main() -> anyhow::Result<(), Error> {
     let args = Args::parse();
 
     if args.lex {
-        let source = fs::read_to_string(&args.input_path)
-            .unwrap_or_else(|err| panic!("Failed to read {}: {}", args.input_path.display(), err));
+        let source = fs::read_to_string(&args.input_path)?;
         if args.verbose {
             eprintln!("{:?}", &source);
         }
@@ -20,8 +19,7 @@ fn main() -> anyhow::Result<(), Error> {
         eprintln!("{:?}", tokens);
     }
     if args.parse {
-        let source = fs::read_to_string(&args.input_path)
-            .unwrap_or_else(|err| panic!("Failed to read {}: {}", args.input_path.display(), err));
+        let source = fs::read_to_string(&args.input_path)?;
         if args.verbose {
             eprintln!("{:?}", &source);
         }
@@ -34,8 +32,7 @@ fn main() -> anyhow::Result<(), Error> {
         eprintln!("{:?}", ast);
     }
     if args.codegen {
-        let source = fs::read_to_string(&args.input_path)
-            .unwrap_or_else(|err| panic!("Failed to read {}: {}", args.input_path.display(), err));
+        let source = fs::read_to_string(&args.input_path)?;
         if args.verbose {
             eprintln!("source: {:?}", &source);
         }
@@ -48,7 +45,7 @@ fn main() -> anyhow::Result<(), Error> {
         if args.verbose {
             eprintln!("AST: {:?}", &ast);
         }
-        let analyzed_ast = SemanticAnalyzer::new().analyze_program(ast);
+        let analyzed_ast = SemanticAnalyzer::new().analyze_program(ast)?;
         if args.verbose {
             eprintln!("Analyzed AST: {:?}", &analyzed_ast);
         }
