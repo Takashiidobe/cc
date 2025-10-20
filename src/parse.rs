@@ -1,6 +1,6 @@
 use crate::tokenize::{Token, TokenKind};
 use std::convert::TryFrom;
-use std::mem;
+use std::{fmt, mem};
 
 pub type Expr = Node<ExprKind>;
 pub type Stmt = Node<StmtKind>;
@@ -151,6 +151,24 @@ pub enum Type {
     Pointer(Box<Type>),
     Array(Box<Type>, usize),
     FunType(Vec<Type>, Box<Type>),
+}
+
+impl fmt::Display for Type {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Type::Char | Type::SChar => f.write_str("char"),
+            Type::UChar => f.write_str("unsigned char"),
+            Type::Int => f.write_str("int"),
+            Type::Long => f.write_str("long"),
+            Type::UInt => f.write_str("unsigned int"),
+            Type::ULong => f.write_str("unsigned long"),
+            Type::Double => f.write_str("double"),
+            Type::Void => f.write_str("void"),
+            Type::Pointer(t) => f.write_str(&format!("*{t}")),
+            Type::Array(t, len) => f.write_str(&format!("{}[]{}", t, len)),
+            Type::FunType(_, _) => f.write_str("function"),
+        }
+    }
 }
 
 impl Type {

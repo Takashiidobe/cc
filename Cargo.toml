@@ -7,6 +7,7 @@ edition = "2024"
 anyhow = "1.0.100"
 clap = { version = "4.5.48", features = ["derive", "env"] }
 logos = "0.15.1"
+thiserror = "2.0.17"
 
 [dev-dependencies]
 datatest-stable = "0.3"
