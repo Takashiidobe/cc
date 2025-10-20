@@ -14,24 +14,33 @@ use crate::{
 
 #[derive(Error, Debug)]
 pub enum SemanticError {
-    #[error("Cannot cast `{0:?}` to `{1:?}`")]
+    #[error("Cannot cast `{0:?}` to `{1}`")]
     ExprCastError(Expr, Type),
-    #[error("Cannot cast from type `{0:?}` to `{1:?}`")]
+
+    #[error("Cannot cast from type `{0}` to `{1}`")]
     CastToError(Type, Type),
+
     #[error("{0}")]
     Unsupported(String),
-    #[error("Variable `{0}` cannot be type `{1:?}`")]
+
+    #[error("Variable `{0}` cannot be type `{1}`")]
     InvalidVarType(String, Type),
-    #[error("Param `{0}` cannot be type `{1:?}`")]
+
+    #[error("Param `{0}` cannot be type `{1}`")]
     InvalidParamType(String, Type),
-    #[error("Cannot dereference type: `{0:?}`")]
+
+    #[error("Cannot dereference type: `{0}`")]
     DereferenceError(Type),
+
     #[error("String literal cannot initialize type {0:?}")]
     InvalidStringLiteral(Type),
+
     #[error("Function '{0}' called with invalid arguments (expected {1:?}, got {2:?})")]
     InvalidFunctionArguments(String, Vec<Type>, Vec<Type>),
+
     #[error("Undeclared identifier: {0}")]
     UndeclaredIdentifier(String),
+
     #[error("Invalid Binary Expression: {0:?} {1:?} {2:?}")]
     InvalidBinaryExpr(Expr, TokenKind, Expr),
 
@@ -41,28 +50,28 @@ pub enum SemanticError {
     #[error("array variable '{0}' requires a string literal initializer")]
     ArrayVarRequiresStringInitializer(String),
 
-    #[error("{0} requires integer type, found {1:?}")]
+    #[error("{0} requires integer type, found {1}")]
     IntegerTypeRequired(&'static str, Type),
 
-    #[error("{0} requires numeric type, found {1:?}")]
+    #[error("{0} requires numeric type, found {1}")]
     NumericTypeRequired(&'static str, Type),
 
-    #[error("{0} requires scalar (int or pointer) type, found {1:?}")]
+    #[error("{0} requires scalar (int or pointer) type, found {1}")]
     ScalarTypeRequired(&'static str, Type),
 
-    #[error("{0} requires compatible types ({1:?} <- {2:?})")]
+    #[error("{0} requires compatible types ({1} <- {2})")]
     IncompatibleForContext(&'static str, Type, Type),
 
-    #[error("{0} requires pointer operand, found {1:?}")]
+    #[error("{0} requires pointer operand, found {1}")]
     PointerOperandRequired(&'static str, Type),
 
-    #[error("{0} requires pointer to sized type, found {1:?}")]
+    #[error("{0} requires pointer to sized type, found {1}")]
     PointerSizedBaseRequired(&'static str, Type),
 
-    #[error("conditional operator requires compatible types ({0:?} vs {1:?})")]
+    #[error("conditional operator requires compatible types ({0} vs {1})")]
     ConditionalTypeMismatch(Type, Type),
 
-    #[error("pointer subtraction requires identical pointer types ({0:?} vs {1:?})")]
+    #[error("pointer subtraction requires identical pointer types ({0} vs {1})")]
     PointerSubTypeMismatch(Type, Type),
 
     #[error("function '{0}' called with wrong number of arguments (expected {1}, got {2})")]
@@ -267,7 +276,7 @@ impl SemanticAnalyzer {
             }
             Ok(analyzed)
         });
-        decl.init = init.transpose()?; // Option<Result<..>> -> Result<Option<..>>
+        decl.init = init.transpose()?;
 
         Ok(decl)
     }
