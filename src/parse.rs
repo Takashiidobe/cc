@@ -153,8 +153,10 @@ pub enum Type {
     FunType(Vec<Type>, Box<Type>),
 }
 
-fn is_plain_void(ty: &Type) -> bool {
-    matches!(ty, Type::Void)
+impl Type {
+    fn is_plain_void(&self) -> bool {
+        matches!(self, Type::Void)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -569,7 +571,7 @@ impl Parser {
 
         loop {
             let param = self.parse_parameter();
-            if is_plain_void(&param.r#type) {
+            if param.r#type.is_plain_void() {
                 panic!("'void' parameter must be the only parameter");
             }
             params.push(param);
@@ -618,7 +620,7 @@ impl Parser {
         let declarator = self.parse_declarator();
         let name = declarator.name.clone();
         let var_type = declarator.type_expr.apply(base_type);
-        if is_plain_void(&var_type) {
+        if var_type.is_plain_void() {
             panic!("variable declared with void type");
         }
         if matches!(var_type, Type::FunType(_, _)) {
@@ -680,7 +682,7 @@ impl Parser {
             }
             type_expr => {
                 let var_type = type_expr.apply(base_type);
-                if is_plain_void(&var_type) {
+                if var_type.is_plain_void() {
                     panic!("variable '{name}' declared with void type");
                 }
 
@@ -1433,7 +1435,7 @@ impl Parser {
                 self.advance();
                 cast_type = Type::Pointer(Box::new(cast_type));
             }
-            if is_plain_void(&cast_type) {
+            if cast_type.is_plain_void() {
                 panic!("Unsupported cast target: void");
             }
             self.skip(&TokenKind::RParen);

@@ -116,12 +116,15 @@ impl<W: Write> Codegen<W> {
                 writeln!(self.buf, "  .quad {}", v.to_bits())?;
             }
             (Type::Char | Type::SChar, Const::Char(v)) => {
-                writeln!(self.buf, "  .byte {}", *v as i32 & 0xff)?;
+                writeln!(self.buf, "  .byte {}", *v & 0xff)?;
             }
             (Type::UChar, Const::UChar(v)) => {
-                writeln!(self.buf, "  .byte {}", *v as i32 & 0xff)?;
+                writeln!(self.buf, "  .byte {}", *v & 0xff)?;
             }
-            _ => panic!("unsupported scalar static initializer {:?} <- {:?}", ty, value),
+            _ => panic!(
+                "unsupported scalar static initializer {:?} <- {:?}",
+                ty, value
+            ),
         }
         Ok(())
     }
@@ -155,10 +158,7 @@ impl<W: Write> Codegen<W> {
                     writeln!(self.buf, "  .zero {}", offset)?;
                 }
                 if !matches!(ty, Type::Pointer(_)) {
-                    panic!(
-                        "label initializer requires pointer type (found {:?})",
-                        ty
-                    );
+                    panic!("label initializer requires pointer type (found {:?})", ty);
                 }
                 writeln!(self.buf, "  .quad {}", symbol)
             }
@@ -497,20 +497,10 @@ impl<W: Write> Codegen<W> {
         match src {
             Value::Var(name) => {
                 let operand = self.stack_operand(name);
-                writeln!(
-                    self.buf,
-                    "  leaq {}, {}",
-                    operand,
-                    Codegen::<W>::reg_name(reg)
-                )?;
+                writeln!(self.buf, "  leaq {}, {}", operand, reg.reg_name64())?;
             }
             Value::Global(name) => {
-                writeln!(
-                    self.buf,
-                    "  leaq {}(%rip), {}",
-                    name,
-                    Codegen::<W>::reg_name(reg)
-                )?;
+                writeln!(self.buf, "  leaq {}(%rip), {}", name, reg.reg_name64())?;
             }
             Value::Constant(_) => panic!("cannot take address of constant"),
         }
@@ -526,7 +516,7 @@ impl<W: Write> Codegen<W> {
                 writeln!(
                     self.buf,
                     "  movsd ({}), {}",
-                    Self::reg_name(Reg::R11),
+                    Reg::R11.reg_name64(),
                     Self::xmm_name(0)
                 )?;
                 self.store_xmm_into_value(0, dst)
@@ -537,7 +527,7 @@ impl<W: Write> Codegen<W> {
                     self.buf,
                     "  {} ({}), {}",
                     self.mov_instr(&dst_ty),
-                    Self::reg_name(Reg::R11),
+                    Reg::R11.reg_name64(),
                     Codegen::<W>::reg_name_for_type(reg, &dst_ty)
                 )?;
                 self.store_reg_into_value(reg, dst)
@@ -555,7 +545,7 @@ impl<W: Write> Codegen<W> {
                     self.buf,
                     "  movsd {}, ({})",
                     Self::xmm_name(0),
-                    Self::reg_name(Reg::R11)
+                    Reg::R11.reg_name64()
                 )
             }
             _ => {
@@ -565,7 +555,7 @@ impl<W: Write> Codegen<W> {
                     "  {} {}, ({})",
                     self.mov_instr(&src_ty),
                     Codegen::<W>::reg_name_for_type(Reg::R10, &src_ty),
-                    Self::reg_name(Reg::R11)
+                    Reg::R11.reg_name64()
                 )
             }
         }
@@ -612,12 +602,12 @@ impl<W: Write> Codegen<W> {
             UnaryOp::Not => {
                 let reg_name = Codegen::<W>::reg_name_for_type(Reg::AX, &ty);
                 writeln!(self.buf, "  cmp $0, {}", reg_name)?;
-                writeln!(self.buf, "  sete {}", Self::reg_name8(Reg::AX))?;
+                writeln!(self.buf, "  sete {}", Reg::AX.reg_name8())?;
                 writeln!(
                     self.buf,
                     "  movzbq {}, {}",
-                    Self::reg_name8(Reg::AX),
-                    Self::reg_name(Reg::AX)
+                    Reg::AX.reg_name8(),
+                    Reg::AX.reg_name64()
                 )?;
             }
         }
@@ -677,12 +667,12 @@ impl<W: Write> Codegen<W> {
                         _ => unreachable!(),
                     };
 
-                    writeln!(self.buf, "  {} {}", set_instr, Self::reg_name8(Reg::AX))?;
+                    writeln!(self.buf, "  {} {}", set_instr, Reg::AX.reg_name8())?;
                     writeln!(
                         self.buf,
                         "  movzbq {}, {}",
-                        Self::reg_name8(Reg::AX),
-                        Self::reg_name(Reg::AX)
+                        Reg::AX.reg_name8(),
+                        Reg::AX.reg_name64()
                     )?;
                     return self.store_reg_into_value(Reg::AX, dst);
                 }
@@ -719,8 +709,8 @@ impl<W: Write> Codegen<W> {
                         writeln!(
                             self.buf,
                             "  xor {}, {}",
-                            Self::reg_name32(Reg::DX),
-                            Self::reg_name32(Reg::DX)
+                            Reg::DX.reg_name32(),
+                            Reg::DX.reg_name32(),
                         )?;
                         writeln!(
                             self.buf,
@@ -732,8 +722,8 @@ impl<W: Write> Codegen<W> {
                         writeln!(
                             self.buf,
                             "  xor {}, {}",
-                            Self::reg_name(Reg::DX),
-                            Self::reg_name(Reg::DX)
+                            Reg::DX.reg_name64(),
+                            Reg::DX.reg_name64(),
                         )?;
                         writeln!(
                             self.buf,
@@ -804,7 +794,7 @@ impl<W: Write> Codegen<W> {
                     self.buf,
                     "  {} {}, {}",
                     op_str,
-                    Self::reg_name8(Reg::CX),
+                    Reg::CX.reg_name8(),
                     Codegen::<W>::reg_name_for_type(Reg::AX, &ty)
                 )?;
 
@@ -861,12 +851,12 @@ impl<W: Write> Codegen<W> {
                     _ => unreachable!(),
                 };
 
-                writeln!(self.buf, "  {} {}", set_instr, Self::reg_name8(Reg::AX))?;
+                writeln!(self.buf, "  {} {}", set_instr, Reg::AX.reg_name8())?;
                 writeln!(
                     self.buf,
                     "  movzbq {}, {}",
-                    Self::reg_name8(Reg::AX),
-                    Self::reg_name(Reg::AX)
+                    Reg::AX.reg_name8(),
+                    Reg::AX.reg_name64(),
                 )?;
 
                 self.store_reg_into_value(Reg::AX, dst)
@@ -886,8 +876,8 @@ impl<W: Write> Codegen<W> {
         self.load_value_into_reg(ptr, Reg::R11)?;
         self.load_value_into_reg(index, Reg::R10)?;
 
-        let base = Codegen::<W>::reg_name(Reg::R11);
-        let idx = Codegen::<W>::reg_name(Reg::R10);
+        let base = Reg::R11.reg_name64();
+        let idx = Reg::R10.reg_name64();
 
         if matches!(scale, 1 | 2 | 4 | 8) {
             if scale == 1 {
@@ -896,18 +886,8 @@ impl<W: Write> Codegen<W> {
                 writeln!(self.buf, "  leaq ({},{},{}), {}", base, idx, scale, base)?;
             }
         } else {
-            writeln!(
-                self.buf,
-                "  imul ${}, {}",
-                scale,
-                Codegen::<W>::reg_name(Reg::R10)
-            )?;
-            writeln!(
-                self.buf,
-                "  add {}, {}",
-                Codegen::<W>::reg_name(Reg::R10),
-                base
-            )?;
+            writeln!(self.buf, "  imul ${}, {}", scale, Reg::R10.reg_name64())?;
+            writeln!(self.buf, "  add {}, {}", Reg::R10.reg_name64(), base)?;
         }
 
         self.store_reg_into_value(Reg::R11, dst)
@@ -927,21 +907,11 @@ impl<W: Write> Codegen<W> {
             }
             Type::Int | Type::UInt => {
                 self.load_value_into_reg(src, Reg::R11)?;
-                writeln!(
-                    self.buf,
-                    "  movl {}, {}",
-                    Codegen::<W>::reg_name32(Reg::R11),
-                    addr
-                )?;
+                writeln!(self.buf, "  movl {}, {}", Reg::R11.reg_name32(), addr)?;
             }
             Type::Long | Type::ULong | Type::Pointer(_) => {
                 self.load_value_into_reg(src, Reg::R11)?;
-                writeln!(
-                    self.buf,
-                    "  movq {}, {}",
-                    Codegen::<W>::reg_name(Reg::R11),
-                    addr
-                )?;
+                writeln!(self.buf, "  movq {}, {}", Reg::R11.reg_name64(), addr)?;
             }
             Type::Void => panic!("cannot copy void value"),
             Type::FunType(_, _) => panic!("function type copy not supported"),
@@ -970,8 +940,8 @@ impl<W: Write> Codegen<W> {
                 writeln!(
                     self.buf,
                     "  movsxd {}, {}",
-                    Codegen::<W>::reg_name32(Reg::R11),
-                    Codegen::<W>::reg_name(Reg::R11)
+                    Reg::R11.reg_name32(),
+                    Reg::R11.reg_name64(),
                 )?;
                 self.store_reg_into_value(Reg::R11, dst)
             }
@@ -1001,7 +971,7 @@ impl<W: Write> Codegen<W> {
                     self.buf,
                     "  cvttsd2si {}, {}",
                     Self::xmm_name(0),
-                    Codegen::<W>::reg_name32(Reg::R11)
+                    Reg::R11.reg_name32(),
                 )?;
                 self.store_reg_into_value(Reg::R11, dst)
             }
@@ -1011,7 +981,7 @@ impl<W: Write> Codegen<W> {
                     self.buf,
                     "  cvttsd2siq {}, {}",
                     Self::xmm_name(0),
-                    Codegen::<W>::reg_name(Reg::R11)
+                    Reg::R11.reg_name64(),
                 )?;
                 self.store_reg_into_value(Reg::R11, dst)
             }
@@ -1021,7 +991,7 @@ impl<W: Write> Codegen<W> {
                     self.buf,
                     "  cvttsd2siq {}, {}",
                     Self::xmm_name(0),
-                    Codegen::<W>::reg_name(Reg::R11)
+                    Reg::R11.reg_name64(),
                 )?;
                 self.store_reg_into_value(Reg::R11, dst)
             }
@@ -1030,7 +1000,7 @@ impl<W: Write> Codegen<W> {
                 writeln!(
                     self.buf,
                     "  cvtsi2sd {}, {}",
-                    Codegen::<W>::reg_name32(Reg::R11),
+                    Reg::R11.reg_name32(),
                     Self::xmm_name(0)
                 )?;
                 self.store_xmm_into_value(0, dst)
@@ -1040,7 +1010,7 @@ impl<W: Write> Codegen<W> {
                 writeln!(
                     self.buf,
                     "  cvtsi2sdq {}, {}",
-                    Codegen::<W>::reg_name(Reg::R11),
+                    Reg::R11.reg_name64(),
                     Self::xmm_name(0)
                 )?;
                 self.store_xmm_into_value(0, dst)
@@ -1050,7 +1020,7 @@ impl<W: Write> Codegen<W> {
                 writeln!(
                     self.buf,
                     "  cvtsi2sdq {}, {}",
-                    Codegen::<W>::reg_name(Reg::R11),
+                    Reg::R11.reg_name64(),
                     Self::xmm_name(0)
                 )?;
                 self.store_xmm_into_value(0, dst)
@@ -1060,15 +1030,15 @@ impl<W: Write> Codegen<W> {
                 writeln!(
                     self.buf,
                     "  mov {}, {}",
-                    Codegen::<W>::reg_name(Reg::R11),
-                    Codegen::<W>::reg_name(Reg::AX)
+                    Reg::R11.reg_name64(),
+                    Reg::AX.reg_name64(),
                 )?;
-                writeln!(self.buf, "  shr $1, {}", Codegen::<W>::reg_name(Reg::AX))?;
-                writeln!(self.buf, "  and $1, {}", Codegen::<W>::reg_name(Reg::R11))?;
+                writeln!(self.buf, "  shr $1, {}", Reg::AX.reg_name64())?;
+                writeln!(self.buf, "  and $1, {}", Reg::R11.reg_name64())?;
                 writeln!(
                     self.buf,
                     "  cvtsi2sdq {}, {}",
-                    Codegen::<W>::reg_name(Reg::AX),
+                    Reg::AX.reg_name64(),
                     Self::xmm_name(0)
                 )?;
                 writeln!(
@@ -1080,7 +1050,7 @@ impl<W: Write> Codegen<W> {
                 writeln!(
                     self.buf,
                     "  cvtsi2sdq {}, {}",
-                    Codegen::<W>::reg_name(Reg::R11),
+                    Reg::R11.reg_name64(),
                     Self::xmm_name(1)
                 )?;
                 writeln!(
@@ -1136,7 +1106,7 @@ impl<W: Write> Codegen<W> {
                 }
                 _ => {
                     self.load_value_into_reg(value, Reg::R11)?;
-                    writeln!(self.buf, "  push {}", Self::reg_name(Reg::R11))?;
+                    writeln!(self.buf, "  push {}", Reg::R11.reg_name64())?;
                 }
             }
             stack_bytes += 8;
@@ -1217,7 +1187,7 @@ impl<W: Write> Codegen<W> {
                 )
             }
             Value::Constant(Const::Long(n)) => {
-                writeln!(self.buf, "  movq ${}, {}", n, Codegen::<W>::reg_name(reg))
+                writeln!(self.buf, "  movq ${}, {}", n, reg.reg_name64())
             }
             Value::Constant(Const::UInt(n)) => {
                 writeln!(
@@ -1228,7 +1198,7 @@ impl<W: Write> Codegen<W> {
                 )
             }
             Value::Constant(Const::ULong(n)) => {
-                writeln!(self.buf, "  movq ${}, {}", n, Codegen::<W>::reg_name(reg))
+                writeln!(self.buf, "  movq ${}, {}", n, reg.reg_name64())
             }
             Value::Constant(Const::Double(_)) => {
                 panic!("attempted to load double into general-purpose register")
@@ -1344,11 +1314,10 @@ impl<W: Write> Codegen<W> {
 
     fn type_size(ty: &Type) -> i64 {
         match ty {
+            Type::Void => 0,
             Type::Char | Type::SChar | Type::UChar => 1,
             Type::Int | Type::UInt => 4,
-            Type::Long | Type::ULong | Type::Double => 8,
-            Type::Void => 0,
-            Type::Pointer(_) => 8,
+            Type::Long | Type::ULong | Type::Double | Type::Pointer(_) => 8,
             Type::FunType(_, _) => panic!("function type has no size"),
             Type::Array(inner, len) => {
                 let len_i64 = i64::try_from(*len).expect("array size exceeds i64");
@@ -1359,12 +1328,9 @@ impl<W: Write> Codegen<W> {
 
     fn type_align(ty: &Type) -> i64 {
         match ty {
-            Type::Char | Type::SChar | Type::UChar => 1,
-            Type::Long | Type::ULong => 8,
+            Type::Char | Type::SChar | Type::UChar | Type::Void => 1,
             Type::Int | Type::UInt => 4,
-            Type::Double => 8,
-            Type::Void => 1,
-            Type::Pointer(_) => 8,
+            Type::Long | Type::ULong | Type::Double | Type::Pointer(_) => 8,
             Type::FunType(_, _) => panic!("function type has no alignment"),
             Type::Array(inner, _) => Self::type_align(inner),
         }
@@ -1374,9 +1340,7 @@ impl<W: Write> Codegen<W> {
         match ty {
             Type::Char | Type::SChar | Type::UChar => "movb",
             Type::Int | Type::UInt => "movl",
-            Type::Long | Type::ULong => "movq",
-            Type::Void => "movq",
-            Type::Pointer(_) => "movq",
+            Type::Long | Type::ULong | Type::Void | Type::Pointer(_) => "movq",
             Type::Double => panic!("mov instruction requested for double"),
             Type::FunType(_, _) => panic!("function type move not supported"),
             Type::Array(_, _) => panic!("array type move not supported"),
@@ -1385,9 +1349,9 @@ impl<W: Write> Codegen<W> {
 
     fn reg_name_for_type(reg: Reg, ty: &Type) -> &'static str {
         match ty {
-            Type::Char | Type::SChar | Type::UChar => Self::reg_name8(reg),
-            Type::Int | Type::UInt => Self::reg_name32(reg),
-            Type::Long | Type::ULong | Type::Void | Type::Pointer(_) => Self::reg_name(reg),
+            Type::Char | Type::SChar | Type::UChar => reg.reg_name8(),
+            Type::Int | Type::UInt => reg.reg_name32(),
+            Type::Long | Type::ULong | Type::Void | Type::Pointer(_) => reg.reg_name64(),
             Type::Double => panic!("general-purpose register requested for double"),
             Type::FunType(_, _) => panic!("function type register request"),
             Type::Array(_, _) => panic!("array type register request"),
@@ -1416,9 +1380,11 @@ impl<W: Write> Codegen<W> {
             Value::Global(name) => self.global_types.get(name).cloned(),
         }
     }
+}
 
-    fn reg_name(reg: Reg) -> &'static str {
-        match reg {
+impl Reg {
+    fn reg_name64(&self) -> &'static str {
+        match self {
             Reg::AX => "%rax",
             Reg::CX => "%rcx",
             Reg::DX => "%rdx",
@@ -1431,8 +1397,8 @@ impl<W: Write> Codegen<W> {
         }
     }
 
-    fn reg_name32(reg: Reg) -> &'static str {
-        match reg {
+    fn reg_name32(&self) -> &'static str {
+        match self {
             Reg::AX => "%eax",
             Reg::CX => "%ecx",
             Reg::DX => "%edx",
@@ -1445,8 +1411,23 @@ impl<W: Write> Codegen<W> {
         }
     }
 
-    fn reg_name8(reg: Reg) -> &'static str {
-        match reg {
+    #[allow(unused)]
+    fn reg_name16(&self) -> &'static str {
+        match self {
+            Reg::AX => "%ax",
+            Reg::CX => "%cx",
+            Reg::DX => "%dx",
+            Reg::DI => "%di",
+            Reg::SI => "%si",
+            Reg::R8 => "%r8w",
+            Reg::R9 => "%r9w",
+            Reg::R10 => "%r10w",
+            Reg::R11 => "%r11w",
+        }
+    }
+
+    fn reg_name8(&self) -> &'static str {
+        match self {
             Reg::AX => "%al",
             Reg::CX => "%cl",
             Reg::DX => "%dl",
