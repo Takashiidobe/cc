@@ -2,4 +2,4 @@
 source: tests/cli.rs
 expression: exit_code
 ---
-104
+10

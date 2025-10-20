@@ -226,7 +226,7 @@ pub enum TokenKind {
     Float(f64),
 
     #[regex(r#"'([^'\\\n]|\\['\"?\\abfnrtv])'"#, |lex| parse_char_literal(lex.slice()))]
-    CharConstant(i32),
+    CharConstant(i8),
 
     #[regex(r#"[a-zA-Z_]\w*"#, |lex| lex.slice().to_owned(), priority = 2)]
     Identifier(String),
@@ -274,7 +274,7 @@ pub fn tokenize(source: &str) -> anyhow::Result<Vec<Token>> {
     Ok(tokens)
 }
 
-fn parse_char_literal(literal: &str) -> i32 {
+fn parse_char_literal(literal: &str) -> i8 {
     let mut chars = literal.chars();
     debug_assert_eq!(chars.next(), Some('\''));
     let value = match chars.next() {
@@ -289,7 +289,7 @@ fn parse_char_literal(literal: &str) -> i32 {
         Some('\'') => {}
         _ => panic!("unterminated character constant: {}", literal),
     }
-    value as i32
+    value as i8
 }
 
 fn parse_string_literal(literal: &str) -> String {

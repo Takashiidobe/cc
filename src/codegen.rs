@@ -116,10 +116,10 @@ impl<W: Write> Codegen<W> {
                 writeln!(self.buf, "  .quad {}", v.to_bits())?;
             }
             (Type::Char | Type::SChar, Const::Char(v)) => {
-                writeln!(self.buf, "  .byte {}", *v & 0xff)?;
+                writeln!(self.buf, "  .byte {}", v)?;
             }
             (Type::UChar, Const::UChar(v)) => {
-                writeln!(self.buf, "  .byte {}", *v & 0xff)?;
+                writeln!(self.buf, "  .byte {}", v)?;
             }
             _ => panic!(
                 "unsupported scalar static initializer {:?} <- {:?}",
@@ -388,12 +388,12 @@ impl<W: Write> Codegen<W> {
             } else if int_reg_idx < ARGUMENT_REGISTERS.len() {
                 let reg = ARGUMENT_REGISTERS[int_reg_idx];
                 int_reg_idx += 1;
-                let reg_name = Codegen::<W>::reg_name_for_type(reg, &ty);
+                let reg_name = reg.reg_name_for_type(&ty);
                 writeln!(self.buf, "  {} {}, {}", self.mov_instr(&ty), reg_name, dest)?;
             } else {
                 let offset = 16 + stack_arg_idx * 8;
                 stack_arg_idx += 1;
-                let temp_reg = Codegen::<W>::reg_name_for_type(Reg::R10, &ty);
+                let temp_reg = Reg::R10.reg_name_for_type(&ty);
                 writeln!(
                     self.buf,
                     "  {} {}(%rbp), {}",
@@ -452,14 +452,14 @@ impl<W: Write> Codegen<W> {
             Instruction::JumpIfZero { condition, target } => {
                 self.load_value_into_reg(condition, Reg::AX)?;
                 let ty = self.value_type(condition);
-                let reg_name = Codegen::<W>::reg_name_for_type(Reg::AX, &ty);
+                let reg_name = Reg::AX.reg_name_for_type(&ty);
                 writeln!(self.buf, "  cmp $0, {}", reg_name)?;
                 writeln!(self.buf, "  je {}", target)
             }
             Instruction::JumpIfNotZero { condition, target } => {
                 self.load_value_into_reg(condition, Reg::AX)?;
                 let ty = self.value_type(condition);
-                let reg_name = Codegen::<W>::reg_name_for_type(Reg::AX, &ty);
+                let reg_name = Reg::AX.reg_name_for_type(&ty);
                 writeln!(self.buf, "  cmp $0, {}", reg_name)?;
                 writeln!(self.buf, "  jne {}", target)
             }
@@ -528,7 +528,7 @@ impl<W: Write> Codegen<W> {
                     "  {} ({}), {}",
                     self.mov_instr(&dst_ty),
                     Reg::R11.reg_name64(),
-                    Codegen::<W>::reg_name_for_type(reg, &dst_ty)
+                    reg.reg_name_for_type(&dst_ty)
                 )?;
                 self.store_reg_into_value(reg, dst)
             }
@@ -554,7 +554,7 @@ impl<W: Write> Codegen<W> {
                     self.buf,
                     "  {} {}, ({})",
                     self.mov_instr(&src_ty),
-                    Codegen::<W>::reg_name_for_type(Reg::R10, &src_ty),
+                    Reg::R10.reg_name_for_type(&src_ty),
                     Reg::R11.reg_name64()
                 )
             }
@@ -589,18 +589,10 @@ impl<W: Write> Codegen<W> {
         self.load_value_into_reg(src, Reg::AX)?;
 
         match op {
-            UnaryOp::Negate => writeln!(
-                self.buf,
-                "  neg {}",
-                Codegen::<W>::reg_name_for_type(Reg::AX, &ty)
-            )?,
-            UnaryOp::Complement => writeln!(
-                self.buf,
-                "  not {}",
-                Codegen::<W>::reg_name_for_type(Reg::AX, &ty)
-            )?,
+            UnaryOp::Negate => writeln!(self.buf, "  neg {}", Reg::AX.reg_name_for_type(&ty))?,
+            UnaryOp::Complement => writeln!(self.buf, "  not {}", Reg::AX.reg_name_for_type(&ty))?,
             UnaryOp::Not => {
-                let reg_name = Codegen::<W>::reg_name_for_type(Reg::AX, &ty);
+                let reg_name = Reg::AX.reg_name_for_type(&ty);
                 writeln!(self.buf, "  cmp $0, {}", reg_name)?;
                 writeln!(self.buf, "  sete {}", Reg::AX.reg_name8())?;
                 writeln!(
@@ -694,7 +686,7 @@ impl<W: Write> Codegen<W> {
                         writeln!(
                             self.buf,
                             "  idiv {}",
-                            Codegen::<W>::reg_name_for_type(Reg::R10, &Type::Int)
+                            Reg::R10.reg_name_for_type(&Type::Int)
                         )?;
                     }
                     Type::Long => {
@@ -702,7 +694,7 @@ impl<W: Write> Codegen<W> {
                         writeln!(
                             self.buf,
                             "  idiv {}",
-                            Codegen::<W>::reg_name_for_type(Reg::R10, &Type::Long)
+                            Reg::R10.reg_name_for_type(&Type::Long)
                         )?;
                     }
                     Type::UInt => {
@@ -715,7 +707,7 @@ impl<W: Write> Codegen<W> {
                         writeln!(
                             self.buf,
                             "  div {}",
-                            Codegen::<W>::reg_name_for_type(Reg::R10, &Type::UInt)
+                            Reg::R10.reg_name_for_type(&Type::UInt)
                         )?;
                     }
                     Type::ULong => {
@@ -728,7 +720,7 @@ impl<W: Write> Codegen<W> {
                         writeln!(
                             self.buf,
                             "  div {}",
-                            Codegen::<W>::reg_name_for_type(Reg::R10, &Type::ULong)
+                            Reg::R10.reg_name_for_type(&Type::ULong)
                         )?;
                     }
                     Type::Void => panic!("division on void type"),
@@ -768,8 +760,8 @@ impl<W: Write> Codegen<W> {
                     self.buf,
                     "  {} {}, {}",
                     op_str,
-                    Codegen::<W>::reg_name_for_type(Reg::R10, &ty),
-                    Codegen::<W>::reg_name_for_type(Reg::AX, &ty)
+                    Reg::R10.reg_name_for_type(&ty),
+                    Reg::AX.reg_name_for_type(&ty)
                 )?;
                 self.store_reg_into_value(Reg::AX, dst)
             }
@@ -781,7 +773,7 @@ impl<W: Write> Codegen<W> {
                 let op_str = match op {
                     BinaryOp::LeftShift => "shl",
                     BinaryOp::RightShift => {
-                        if Self::is_unsigned_type(&ty) {
+                        if ty.is_unsigned() {
                             "shr"
                         } else {
                             "sar"
@@ -795,7 +787,7 @@ impl<W: Write> Codegen<W> {
                     "  {} {}, {}",
                     op_str,
                     Reg::CX.reg_name8(),
-                    Codegen::<W>::reg_name_for_type(Reg::AX, &ty)
+                    Reg::AX.reg_name_for_type(&ty)
                 )?;
 
                 self.store_reg_into_value(Reg::AX, dst)
@@ -812,11 +804,11 @@ impl<W: Write> Codegen<W> {
                 writeln!(
                     self.buf,
                     "  cmp {}, {}",
-                    Codegen::<W>::reg_name_for_type(Reg::R10, &ty),
-                    Codegen::<W>::reg_name_for_type(Reg::AX, &ty)
+                    Reg::R10.reg_name_for_type(&ty),
+                    Reg::AX.reg_name_for_type(&ty)
                 )?;
 
-                let is_unsigned = Self::is_unsigned_type(&ty);
+                let is_unsigned = ty.is_unsigned();
                 let set_instr = match op {
                     BinaryOp::Equal => "sete",
                     BinaryOp::NotEqual => "setne",
@@ -1069,8 +1061,8 @@ impl<W: Write> Codegen<W> {
         let mut int_regs = Vec::new();
         let mut float_regs = Vec::new();
         let mut stack_args: Vec<(Value, Type)> = Vec::new();
-        let mut int_reg_idx = 0usize;
-        let mut float_reg_idx = 0usize;
+        let mut int_reg_idx = 0;
+        let mut float_reg_idx = 0;
 
         for arg in args {
             let ty = self.value_type(arg);
@@ -1167,7 +1159,7 @@ impl<W: Write> Codegen<W> {
                     self.buf,
                     "  movb ${}, {}",
                     *n,
-                    Codegen::<W>::reg_name_for_type(reg, &Type::Char)
+                    reg.reg_name_for_type(&Type::Char)
                 )
             }
             Value::Constant(Const::UChar(n)) => {
@@ -1175,7 +1167,7 @@ impl<W: Write> Codegen<W> {
                     self.buf,
                     "  movb ${}, {}",
                     *n,
-                    Codegen::<W>::reg_name_for_type(reg, &Type::UChar)
+                    reg.reg_name_for_type(&Type::UChar)
                 )
             }
             Value::Constant(Const::Int(n)) => {
@@ -1183,7 +1175,7 @@ impl<W: Write> Codegen<W> {
                     self.buf,
                     "  movl ${}, {}",
                     n,
-                    Codegen::<W>::reg_name_for_type(reg, &Type::Int)
+                    reg.reg_name_for_type(&Type::Int)
                 )
             }
             Value::Constant(Const::Long(n)) => {
@@ -1194,7 +1186,7 @@ impl<W: Write> Codegen<W> {
                     self.buf,
                     "  movl ${}, {}",
                     n,
-                    Codegen::<W>::reg_name_for_type(reg, &Type::UInt)
+                    reg.reg_name_for_type(&Type::UInt)
                 )
             }
             Value::Constant(Const::ULong(n)) => {
@@ -1210,7 +1202,7 @@ impl<W: Write> Codegen<W> {
                     "  {} {}, {}",
                     self.mov_instr(&ty),
                     operand,
-                    Codegen::<W>::reg_name_for_type(reg, &ty)
+                    reg.reg_name_for_type(&ty)
                 )
             }
             Value::Global(name) => {
@@ -1219,7 +1211,7 @@ impl<W: Write> Codegen<W> {
                     "  {} {}(%rip), {}",
                     self.mov_instr(&ty),
                     name,
-                    Codegen::<W>::reg_name_for_type(reg, &ty)
+                    reg.reg_name_for_type(&ty)
                 )
             }
         }
@@ -1227,7 +1219,7 @@ impl<W: Write> Codegen<W> {
 
     fn store_reg_into_value(&mut self, reg: Reg, value: &Value) -> Result<()> {
         let ty = self.value_type(value);
-        let reg_name = Codegen::<W>::reg_name_for_type(reg, &ty);
+        let reg_name = reg.reg_name_for_type(&ty);
         match value {
             Value::Var(name) => {
                 let operand = self.stack_operand(name);
@@ -1347,21 +1339,6 @@ impl<W: Write> Codegen<W> {
         }
     }
 
-    fn reg_name_for_type(reg: Reg, ty: &Type) -> &'static str {
-        match ty {
-            Type::Char | Type::SChar | Type::UChar => reg.reg_name8(),
-            Type::Int | Type::UInt => reg.reg_name32(),
-            Type::Long | Type::ULong | Type::Void | Type::Pointer(_) => reg.reg_name64(),
-            Type::Double => panic!("general-purpose register requested for double"),
-            Type::FunType(_, _) => panic!("function type register request"),
-            Type::Array(_, _) => panic!("array type register request"),
-        }
-    }
-
-    fn is_unsigned_type(ty: &Type) -> bool {
-        matches!(ty, Type::UChar | Type::UInt | Type::ULong)
-    }
-
     fn value_type(&self, value: &Value) -> Type {
         self.value_type_optional(value)
             .unwrap_or_else(|| panic!("unknown value"))
@@ -1383,6 +1360,17 @@ impl<W: Write> Codegen<W> {
 }
 
 impl Reg {
+    fn reg_name_for_type(&self, ty: &Type) -> &'static str {
+        match ty {
+            Type::Char | Type::SChar | Type::UChar => self.reg_name8(),
+            Type::Int | Type::UInt => self.reg_name32(),
+            Type::Long | Type::ULong | Type::Void | Type::Pointer(_) => self.reg_name64(),
+            Type::Double => panic!("general-purpose register requested for double"),
+            Type::FunType(_, _) => panic!("function type register request"),
+            Type::Array(_, _) => panic!("array type register request"),
+        }
+    }
+
     fn reg_name64(&self) -> &'static str {
         match self {
             Reg::AX => "%rax",

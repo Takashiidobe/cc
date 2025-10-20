@@ -46,7 +46,10 @@ pub struct StaticConstant {
 
 #[derive(Debug, Clone)]
 pub enum StaticInit {
-    Scalar { offset: i64, value: Const },
+    Scalar {
+        offset: i64,
+        value: Const,
+    },
     Bytes {
         offset: i64,
         value: Vec<u8>,
@@ -374,14 +377,10 @@ impl TackyGen {
                 }
                 (_, ExprKind::String(value)) => {
                     let symbol = self.intern_string_literal(value);
-                    init_list.push(StaticInit::Label {
-                        offset: 0,
-                        symbol,
-                    });
+                    init_list.push(StaticInit::Label { offset: 0, symbol });
                 }
                 (_, ExprKind::Constant(c)) => {
-                    let const_value =
-                        Self::convert_constant(c.clone(), &expr.r#type, &r#type);
+                    let const_value = Self::convert_constant(c.clone(), &expr.r#type, &r#type);
                     init_list.push(StaticInit::Scalar {
                         offset: 0,
                         value: const_value,
@@ -628,7 +627,13 @@ impl TackyGen {
     fn is_integer_type(ty: &Type) -> bool {
         matches!(
             ty,
-            Type::Char | Type::SChar | Type::UChar | Type::Int | Type::UInt | Type::Long | Type::ULong
+            Type::Char
+                | Type::SChar
+                | Type::UChar
+                | Type::Int
+                | Type::UInt
+                | Type::Long
+                | Type::ULong
         )
     }
 
@@ -714,8 +719,8 @@ impl TackyGen {
                 _ => panic!("mismatched constant for double conversion"),
             };
             return match to_type {
-                Type::Char | Type::SChar => Const::Char(value as i32),
-                Type::UChar => Const::UChar(value as i32),
+                Type::Char | Type::SChar => Const::Char(value as i8),
+                Type::UChar => Const::UChar(value as u8),
                 Type::Int => Const::Int(value as i64),
                 Type::Long => Const::Long(value as i64),
                 Type::UInt => Const::UInt(value as u64),
@@ -733,8 +738,8 @@ impl TackyGen {
         let from_unsigned = Self::is_unsigned(from_type);
 
         let mut raw = match constant {
-            Const::Char(n) => (n as i8 as i32 as u32) as u128,
-            Const::UChar(n) => (n as u8 as u32) as u128,
+            Const::Char(n) => (n as i32 as u32) as u128,
+            Const::UChar(n) => (n as u32) as u128,
             Const::Int(n) => (n as i32 as u32) as u128,
             Const::UInt(n) => (n as u32) as u128,
             Const::Long(n) => (n as u64) as u128,
@@ -756,23 +761,23 @@ impl TackyGen {
 
         match to_type {
             Type::Char | Type::SChar => {
-                let value = (raw as u8) as i8 as i32;
+                let value = raw as i8;
                 Const::Char(value)
             }
             Type::UChar => {
-                let value = (raw as u8) as i32;
+                let value = raw as u8;
                 Const::UChar(value)
             }
             Type::Int => {
-                let value = (raw as u32) as i32 as i64;
+                let value = raw as i64;
                 Const::Int(value)
             }
             Type::UInt => {
-                let value = (raw as u32) as u64;
+                let value = raw as u64;
                 Const::UInt(value)
             }
             Type::Long => {
-                let value = (raw as u64) as i64;
+                let value = raw as i64;
                 Const::Long(value)
             }
             Type::ULong => Const::ULong(raw as u64),

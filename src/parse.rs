@@ -154,15 +154,19 @@ pub enum Type {
 }
 
 impl Type {
-    fn is_plain_void(&self) -> bool {
+    pub(crate) fn is_void(&self) -> bool {
         matches!(self, Type::Void)
+    }
+
+    pub(crate) fn is_unsigned(&self) -> bool {
+        matches!(self, Type::UChar | Type::UInt | Type::ULong)
     }
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Const {
-    Char(i32),
-    UChar(i32),
+    Char(i8),
+    UChar(u8),
     Int(i64),
     Long(i64),
     UInt(u64),
@@ -270,7 +274,7 @@ struct TypeSpecifierState {
     saw_long: bool,
     saw_int: bool,
     saw_char: bool,
-    signedness: Option<bool>, // Some(true) for signed, Some(false) for unsigned
+    signedness: Option<bool>,
     is_const: bool,
 }
 
@@ -299,9 +303,6 @@ impl TypeSpecifierState {
                 if self.saw_void || self.saw_double {
                     panic!("'long' cannot be combined with this type specifier");
                 }
-                if self.saw_long {
-                    panic!("duplicate 'long' specifier in declaration");
-                }
                 self.saw_long = true;
             }
             TokenKind::Int => {
@@ -329,9 +330,6 @@ impl TypeSpecifierState {
                 if self.signedness == Some(false) {
                     panic!("conflicting 'signed' and 'unsigned' specifiers");
                 }
-                if self.signedness == Some(true) {
-                    panic!("duplicate 'signed' specifier in declaration");
-                }
                 self.signedness = Some(true);
             }
             TokenKind::Unsigned => {
@@ -340,9 +338,6 @@ impl TypeSpecifierState {
                 }
                 if self.signedness == Some(true) {
                     panic!("conflicting 'signed' and 'unsigned' specifiers");
-                }
-                if self.signedness == Some(false) {
-                    panic!("duplicate 'unsigned' specifier in declaration");
                 }
                 self.signedness = Some(false);
             }
@@ -571,7 +566,7 @@ impl Parser {
 
         loop {
             let param = self.parse_parameter();
-            if param.r#type.is_plain_void() {
+            if param.r#type.is_void() {
                 panic!("'void' parameter must be the only parameter");
             }
             params.push(param);
@@ -620,7 +615,7 @@ impl Parser {
         let declarator = self.parse_declarator();
         let name = declarator.name.clone();
         let var_type = declarator.type_expr.apply(base_type);
-        if var_type.is_plain_void() {
+        if var_type.is_void() {
             panic!("variable declared with void type");
         }
         if matches!(var_type, Type::FunType(_, _)) {
@@ -682,7 +677,7 @@ impl Parser {
             }
             type_expr => {
                 let var_type = type_expr.apply(base_type);
-                if var_type.is_plain_void() {
+                if var_type.is_void() {
                     panic!("variable '{name}' declared with void type");
                 }
 
@@ -1435,7 +1430,7 @@ impl Parser {
                 self.advance();
                 cast_type = Type::Pointer(Box::new(cast_type));
             }
-            if cast_type.is_plain_void() {
+            if cast_type.is_void() {
                 panic!("Unsupported cast target: void");
             }
             self.skip(&TokenKind::RParen);
