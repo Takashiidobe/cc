@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::convert::TryFrom;
-use std::fmt::Write as FmtWrite;
+use std::fmt::{self, Write as FmtWrite};
 use std::io::{Result, Write};
 
 use crate::parse::{Const, Type};
@@ -17,7 +17,7 @@ pub struct Codegen<W: Write> {
     value_types: BTreeMap<String, Type>,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 enum Reg {
     AX,
     CX,
@@ -30,10 +30,54 @@ enum Reg {
     R11,
 }
 
+#[derive(Debug, Clone, Copy)]
+enum FloatReg {
+    XMM0,
+    XMM1,
+    XMM2,
+    XMM3,
+    XMM4,
+    XMM5,
+    XMM6,
+    XMM7,
+}
+
+impl FloatReg {
+    const COUNT: usize = 8;
+}
+
+impl From<usize> for FloatReg {
+    fn from(value: usize) -> Self {
+        match value {
+            0 => FloatReg::XMM0,
+            1 => FloatReg::XMM1,
+            2 => FloatReg::XMM2,
+            3 => FloatReg::XMM3,
+            4 => FloatReg::XMM4,
+            5 => FloatReg::XMM5,
+            6 => FloatReg::XMM6,
+            7 => FloatReg::XMM7,
+            _ => panic!("Invalid float register number"),
+        }
+    }
+}
+
+impl fmt::Display for FloatReg {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            FloatReg::XMM0 => "%xmm0",
+            FloatReg::XMM1 => "%xmm1",
+            FloatReg::XMM2 => "%xmm2",
+            FloatReg::XMM3 => "%xmm3",
+            FloatReg::XMM4 => "%xmm4",
+            FloatReg::XMM5 => "%xmm5",
+            FloatReg::XMM6 => "%xmm6",
+            FloatReg::XMM7 => "%xmm7",
+        })
+    }
+}
+
 const ARGUMENT_REGISTERS: [Reg; 6] = [Reg::DI, Reg::SI, Reg::DX, Reg::CX, Reg::R8, Reg::R9];
-const FLOAT_ARGUMENT_REGISTERS: [&str; 8] = [
-    "%xmm0", "%xmm1", "%xmm2", "%xmm3", "%xmm4", "%xmm5", "%xmm6", "%xmm7",
-];
 
 impl<W: Write> Codegen<W> {
     pub fn new(buf: W) -> Self {
@@ -94,7 +138,7 @@ impl<W: Write> Codegen<W> {
     fn emit_scalar_static(&mut self, ty: &Type, value: &Const) -> Result<()> {
         match (ty, value) {
             (Type::Int, Const::Int(v)) => {
-                writeln!(self.buf, "  .long {}", *v as i32)?;
+                writeln!(self.buf, "  .long {}", v)?;
             }
             (Type::UInt, Const::UInt(v)) => {
                 let truncated = v & 0xffff_ffff;
@@ -129,12 +173,17 @@ impl<W: Write> Codegen<W> {
         Ok(())
     }
 
+    fn emit_zero(&mut self, offset: i64) -> Result<()> {
+        if offset != 0 {
+            writeln!(self.buf, "  .zero {}", offset)?;
+        }
+        Ok(())
+    }
+
     fn emit_static_init_for_type(&mut self, ty: &Type, init: &StaticInit) -> Result<()> {
         match init {
             StaticInit::Scalar { offset, value } => {
-                if *offset != 0 {
-                    writeln!(self.buf, "  .zero {}", offset)?;
-                }
+                self.emit_zero(*offset)?;
                 self.emit_scalar_static(ty, value)
             }
             StaticInit::Bytes {
@@ -142,9 +191,7 @@ impl<W: Write> Codegen<W> {
                 value,
                 null_terminated,
             } => {
-                if *offset != 0 {
-                    writeln!(self.buf, "  .zero {}", offset)?;
-                }
+                self.emit_zero(*offset)?;
                 if !matches!(ty, Type::Array(_, _)) {
                     panic!(
                         "byte initializer is only supported for array types (found {:?})",
@@ -154,9 +201,7 @@ impl<W: Write> Codegen<W> {
                 self.emit_bytes_directive(value, *null_terminated)
             }
             StaticInit::Label { offset, symbol } => {
-                if *offset != 0 {
-                    writeln!(self.buf, "  .zero {}", offset)?;
-                }
+                self.emit_zero(*offset)?;
                 if !matches!(ty, Type::Pointer(_)) {
                     panic!("label initializer requires pointer type (found {:?})", ty);
                 }
@@ -247,13 +292,24 @@ impl<W: Write> Codegen<W> {
         for instr in &function.instructions {
             self.emit_instruction(instr)?;
         }
-        match function.return_type {
+        let ty = &function.return_type;
+        match ty {
             Type::Char | Type::SChar | Type::UChar => {
                 panic!("char returns not yet supported")
             }
-            Type::Int | Type::UInt => writeln!(self.buf, "  movl $0, %eax")?,
-            Type::Long | Type::ULong | Type::Pointer(_) => writeln!(self.buf, "  movq $0, %rax")?,
-            Type::Double => writeln!(self.buf, "  xorpd %xmm0, %xmm0")?,
+            Type::Int | Type::UInt => writeln!(
+                self.buf,
+                "  {} $0, {}",
+                self.mov_instr(ty),
+                Reg::AX.reg_name32()
+            )?,
+            Type::Long | Type::ULong | Type::Pointer(_) => writeln!(
+                self.buf,
+                "  {} $0, {}",
+                self.mov_instr(ty),
+                Reg::AX.reg_name64()
+            )?,
+            Type::Double => writeln!(self.buf, "  xorpd {}, {}", FloatReg::XMM0, FloatReg::XMM0)?,
             Type::Void => {}
             Type::FunType(_, _) => {
                 panic!("unsupported function return type")
@@ -375,8 +431,8 @@ impl<W: Write> Codegen<W> {
             let dest = self.stack_operand(param);
 
             if ty == Type::Double {
-                if float_reg_idx < FLOAT_ARGUMENT_REGISTERS.len() {
-                    let src = FLOAT_ARGUMENT_REGISTERS[float_reg_idx];
+                if float_reg_idx < FloatReg::COUNT {
+                    let src = FloatReg::from(float_reg_idx);
                     float_reg_idx += 1;
                     writeln!(self.buf, "  movsd {}, {}", src, dest)?;
                 } else {
@@ -543,7 +599,8 @@ impl<W: Write> Codegen<W> {
                 self.load_value_into_xmm(src, 0)?;
                 writeln!(
                     self.buf,
-                    "  movsd {}, ({})",
+                    "  {} {}, ({})",
+                    self.mov_instr(&src_ty),
                     Self::xmm_name(0),
                     Reg::R11.reg_name64()
                 )
@@ -931,7 +988,7 @@ impl<W: Write> Codegen<W> {
                 self.load_value_into_reg(src, Reg::R11)?;
                 writeln!(
                     self.buf,
-                    "  movsxd {}, {}",
+                    "  movslq {}, {}",
                     Reg::R11.reg_name32(),
                     Reg::R11.reg_name64(),
                 )?;
@@ -1067,7 +1124,7 @@ impl<W: Write> Codegen<W> {
         for arg in args {
             let ty = self.value_type(arg);
             if ty == Type::Double {
-                if float_reg_idx < FLOAT_ARGUMENT_REGISTERS.len() {
+                if float_reg_idx < FloatReg::COUNT {
                     float_regs.push((float_reg_idx, arg.clone()));
                     float_reg_idx += 1;
                 } else {

@@ -1,0 +1,6 @@
+---
+source: tests/cli.rs
+expression: "&mine"
+---
+stdout: "4294967298"
+status: 2

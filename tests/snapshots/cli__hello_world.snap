@@ -1,0 +1,6 @@
+---
+source: tests/cli.rs
+expression: "&mine"
+---
+stdout: "Hello, World!\n"
+status: 0
