@@ -404,7 +404,9 @@ impl<W: Write> Codegen<W> {
             Type::FunType(_, _) => {
                 return Err(CodegenError::UnsupportedFunctionReturnType(ty.clone()));
             }
-            Type::Array(_, _) => return Err(CodegenError::ArrayReturnTypeUnsupported),
+            Type::Array(_, _) | Type::IncompleteArray(_) => {
+                return Err(CodegenError::ArrayReturnTypeUnsupported);
+            }
         }
         let result = self.emit_epilogue();
         self.value_types.clear();
@@ -454,8 +456,11 @@ impl<W: Write> Codegen<W> {
                     Self::collect_value(&mut vars, index);
                     Self::collect_value(&mut vars, dst);
                 }
-                Instruction::CopyToOffset { src, .. } => {
+                Instruction::CopyToOffset { src, dst, .. } => {
                     Self::collect_value(&mut vars, src);
+                    if self.value_types.contains_key(dst) {
+                        vars.insert(dst.clone());
+                    }
                 }
                 Instruction::FunCall { args, dst, .. } => {
                     for arg in args {
@@ -896,6 +901,7 @@ impl<W: Write> Codegen<W> {
                     }
                     Type::Void
                     | Type::Array(_, _)
+                    | Type::IncompleteArray(_)
                     | Type::Double
                     | Type::Pointer(_)
                     | Type::FunType(_, _) => {
@@ -1059,7 +1065,11 @@ impl<W: Write> Codegen<W> {
     }
 
     fn emit_copy_to_offset(&mut self, src: &Value, dst: &str, offset: i64) -> Result<()> {
-        let addr = self.static_address(dst, offset);
+        let addr = if let Some(base) = self.stack_map.get(dst) {
+            format!("{}(%rbp)", base + offset)
+        } else {
+            self.static_address(dst, offset)
+        };
         let ty = self.value_type(src)?;
 
         match ty {
@@ -1068,7 +1078,8 @@ impl<W: Write> Codegen<W> {
                 writeln!(self.buf, "  movsd {}, {}", Self::xmm_name(0)?, addr)?;
             }
             Type::Char | Type::SChar | Type::UChar => {
-                return Err(CodegenError::CopyToOffsetUnsupported(ty));
+                self.load_value_into_reg(src, Reg::R11)?;
+                writeln!(self.buf, "  movb {}, {}", Reg::R11.reg_name8(), addr)?;
             }
             Type::Int | Type::UInt => {
                 self.load_value_into_reg(src, Reg::R11)?;
@@ -1078,7 +1089,7 @@ impl<W: Write> Codegen<W> {
                 self.load_value_into_reg(src, Reg::R11)?;
                 writeln!(self.buf, "  movq {}, {}", Reg::R11.reg_name64(), addr)?;
             }
-            Type::Void | Type::FunType(_, _) | Type::Array(_, _) => {
+            Type::Void | Type::FunType(_, _) | Type::Array(_, _) | Type::IncompleteArray(_) => {
                 return Err(CodegenError::CopyToOffsetUnsupported(ty));
             }
         }
@@ -1107,6 +1118,16 @@ impl<W: Write> Codegen<W> {
                     "  movslq {}, {}",
                     Reg::R11.reg_name32(),
                     Reg::R11.reg_name64(),
+                )?;
+                self.store_reg_into_value(Reg::R11, dst)
+            }
+            (Type::Char, Type::Int) => {
+                self.load_value_into_reg(src, Reg::R11)?;
+                writeln!(
+                    self.buf,
+                    "  movzx {}, {}",
+                    Reg::R11.reg_name8(),
+                    Reg::R11.reg_name32(),
                 )?;
                 self.store_reg_into_value(Reg::R11, dst)
             }
@@ -1503,6 +1524,7 @@ impl<W: Write> Codegen<W> {
                     .map_err(|_| CodegenError::ArraySizeTooLarge((*len) as u128))?;
                 len_i64 * Self::type_size(inner)?
             }
+            Type::IncompleteArray(_) => return Err(CodegenError::TypeHasNoSize(ty.clone())),
         };
         Ok(sz)
     }
@@ -1514,6 +1536,7 @@ impl<W: Write> Codegen<W> {
             Type::Long | Type::ULong | Type::Double | Type::Pointer(_) => 8,
             Type::FunType(_, _) => return Err(CodegenError::TypeHasNoAlignment(ty.clone())),
             Type::Array(inner, _) => Self::type_align(inner)?,
+            Type::IncompleteArray(_) => return Err(CodegenError::TypeHasNoAlignment(ty.clone())),
         };
         Ok(a)
     }
@@ -1524,7 +1547,7 @@ impl<W: Write> Codegen<W> {
             Type::Int | Type::UInt => Ok("movl"),
             Type::Long | Type::ULong | Type::Void | Type::Pointer(_) => Ok("movq"),
             Type::Double => Err(CodegenError::MovUnsupported(ty.clone())),
-            Type::FunType(_, _) | Type::Array(_, _) => {
+            Type::FunType(_, _) | Type::Array(_, _) | Type::IncompleteArray(_) => {
                 Err(CodegenError::MovUnsupported(ty.clone()))
             }
         }
@@ -1556,7 +1579,7 @@ impl Reg {
             Type::Char | Type::SChar | Type::UChar => Ok(self.reg_name8()),
             Type::Int | Type::UInt => Ok(self.reg_name32()),
             Type::Long | Type::ULong | Type::Void | Type::Pointer(_) => Ok(self.reg_name64()),
-            Type::Double | Type::FunType(_, _) | Type::Array(_, _) => {
+            Type::Double | Type::FunType(_, _) | Type::Array(_, _) | Type::IncompleteArray(_) => {
                 Err(CodegenError::GprRequestedFor(ty.clone()))
             }
         }

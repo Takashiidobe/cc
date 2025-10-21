@@ -238,6 +238,7 @@ pub enum Type {
     Void,
     Pointer(Box<Type>),
     Array(Box<Type>, usize),
+    IncompleteArray(Box<Type>),
     FunType(Vec<Type>, Box<Type>),
 }
 
@@ -253,7 +254,8 @@ impl fmt::Display for Type {
             Type::Double => f.write_str("double"),
             Type::Void => f.write_str("void"),
             Type::Pointer(t) => f.write_str(&format!("*{t}")),
-            Type::Array(t, len) => f.write_str(&format!("{}[]{}", t, len)),
+            Type::Array(t, len) => f.write_str(&format!("{t}[{len}]")),
+            Type::IncompleteArray(t) => f.write_str(&format!("{t}[]")),
             Type::FunType(_, _) => f.write_str("function"),
         }
     }
@@ -308,7 +310,7 @@ enum TypeExpr {
     Base,
     Pointer(Box<TypeExpr>),
     Array {
-        size: usize,
+        size: Option<usize>,
         elem: Box<TypeExpr>,
     },
     Function {
@@ -346,7 +348,7 @@ impl TypeExpr {
         }
     }
 
-    fn add_array(self, size: usize) -> Self {
+    fn add_array(self, size: Option<usize>) -> Self {
         match self {
             TypeExpr::Pointer(inner) => TypeExpr::Pointer(Box::new(inner.add_array(size))),
             other => TypeExpr::Array {
@@ -360,7 +362,10 @@ impl TypeExpr {
         match self {
             TypeExpr::Base => base,
             TypeExpr::Pointer(inner) => Type::Pointer(Box::new(inner.apply(base))),
-            TypeExpr::Array { size, elem } => Type::Array(Box::new(elem.apply(base)), *size),
+            TypeExpr::Array { size, elem } => match size {
+                Some(len) => Type::Array(Box::new(elem.apply(base)), *len),
+                None => Type::IncompleteArray(Box::new(elem.apply(base))),
+            },
             TypeExpr::Function { params, ret } => {
                 let param_types = params.iter().map(|p| p.r#type.clone()).collect();
                 let return_type = ret.apply(base);
@@ -630,7 +635,11 @@ impl Parser {
                 }
                 Some(TokenKind::LBracket) => {
                     self.advance()?;
-                    let size = self.parse_array_size()?;
+                    let size = if matches!(self.peek_kind(), Some(TokenKind::RBracket)) {
+                        None
+                    } else {
+                        Some(self.parse_array_size()?)
+                    };
                     self.expect(&TokenKind::RBracket)?;
                     let current = mem::replace(&mut declarator.type_expr, TypeExpr::Base);
                     declarator.type_expr = current.add_array(size);
@@ -1847,6 +1856,7 @@ impl Parser {
             TokenKind::Int
                 | TokenKind::Long
                 | TokenKind::Double
+                | TokenKind::Char
                 | TokenKind::Unsigned
                 | TokenKind::Signed
                 | TokenKind::Void

@@ -258,6 +258,17 @@ impl SemanticAnalyzer {
                         decl.name.clone(),
                     ));
                 }
+                (Type::IncompleteArray(elem), ExprKind::String(value))
+                    if Self::is_char_type(elem.as_ref()) =>
+                {
+                    let size = value.len() + 1;
+                    decl.r#type = Type::Array(elem.clone(), size);
+                }
+                (Type::IncompleteArray(_), _) => {
+                    return Err(SemanticError::ArrayVarRequiresStringInitializer(
+                        decl.name.clone(),
+                    ));
+                }
                 (_, ExprKind::String(_)) => {
                     if !matches!(
                         &decl.r#type,
@@ -277,6 +288,10 @@ impl SemanticAnalyzer {
             Ok(analyzed)
         });
         decl.init = init.transpose()?;
+
+        if decl.is_definition && matches!(decl.r#type, Type::IncompleteArray(_)) {
+            return Err(SemanticError::ArrayVarRequiresStringInitializer(decl.name));
+        }
 
         Ok(decl)
     }
@@ -302,6 +317,17 @@ impl SemanticAnalyzer {
                         decl.name.clone(),
                     ));
                 }
+                (Type::IncompleteArray(elem), ExprKind::String(value))
+                    if Self::is_char_type(elem.as_ref()) =>
+                {
+                    let size = value.len() + 1;
+                    decl.r#type = Type::Array(elem.clone(), size);
+                }
+                (Type::IncompleteArray(_), _) => {
+                    return Err(SemanticError::ArrayVarRequiresStringInitializer(
+                        decl.name.clone(),
+                    ));
+                }
                 (_, ExprKind::String(_)) => {
                     if !matches!(
                         &decl.r#type,
@@ -322,6 +348,10 @@ impl SemanticAnalyzer {
         });
         if let Some(r) = init {
             decl.init = Some(r?);
+        }
+
+        if matches!(decl.r#type, Type::IncompleteArray(_)) {
+            return Err(SemanticError::ArrayVarRequiresStringInitializer(decl.name));
         }
 
         match decl.storage_class {
@@ -1249,7 +1279,8 @@ impl SemanticAnalyzer {
             | Type::Double
             | Type::Pointer(_)
             | Type::FunType(_, _)
-            | Type::Array(_, _) => return Err(SemanticError::NoIntegerRank(ty.clone())),
+            | Type::Array(_, _)
+            | Type::IncompleteArray(_) => return Err(SemanticError::NoIntegerRank(ty.clone())),
         };
         Ok(r)
     }
@@ -1317,6 +1348,7 @@ impl SemanticAnalyzer {
     fn adjust_parameter_type(&self, ty: Type) -> Type {
         match ty {
             Type::Array(inner, _) => Type::Pointer(inner),
+            Type::IncompleteArray(inner) => Type::Pointer(inner),
             Type::FunType(params, ret) => Type::Pointer(Box::new(Type::FunType(params, ret))),
             other => other,
         }
@@ -1325,6 +1357,7 @@ impl SemanticAnalyzer {
     fn decay_array_type(&self, ty: &Type) -> Type {
         match ty {
             Type::Array(inner, _) => Type::Pointer(inner.clone()),
+            Type::IncompleteArray(inner) => Type::Pointer(inner.clone()),
             Type::FunType(params, ret) => {
                 Type::Pointer(Box::new(Type::FunType(params.clone(), ret.clone())))
             }
@@ -1336,6 +1369,7 @@ impl SemanticAnalyzer {
         if decay_arrays {
             expr.r#type = match expr.r#type.clone() {
                 Type::Array(inner, _) => Type::Pointer(inner),
+                Type::IncompleteArray(inner) => Type::Pointer(inner),
                 Type::FunType(params, ret) => Type::Pointer(Box::new(Type::FunType(params, ret))),
                 other => other,
             };
@@ -1344,7 +1378,7 @@ impl SemanticAnalyzer {
     }
 
     fn is_array_type(ty: &Type) -> bool {
-        matches!(ty, Type::Array(_, _))
+        matches!(ty, Type::Array(_, _) | Type::IncompleteArray(_))
     }
 
     fn insert_symbol(&mut self, name: String, symbol: Symbol) {

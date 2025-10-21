@@ -431,6 +431,9 @@ impl TackyGen {
                     });
                 }
                 (Type::Array(_, _), _) => return Err(IRError::UnsupportedArrayInit(name.clone())),
+                (Type::IncompleteArray(_), _) => {
+                    return Err(IRError::UnsupportedArrayInit(name.clone()))
+                }
                 (_, ExprKind::String(value)) => {
                     let symbol = self.intern_string_literal(value);
                     init_list.push(StaticInit::Label { offset: 0, symbol });
@@ -666,7 +669,7 @@ impl TackyGen {
             Type::Long | Type::ULong => 64,
             Type::Double => 64,
             Type::Pointer(_) => 64,
-            Type::Void | Type::FunType(_, _) | Type::Array(_, _) => {
+            Type::Void | Type::FunType(_, _) | Type::Array(_, _) | Type::IncompleteArray(_) => {
                 return Err(IRError::NoBitWidth(ty.clone()));
             }
         })
@@ -712,7 +715,8 @@ impl TackyGen {
             | Type::Double
             | Type::Pointer(_)
             | Type::FunType(_, _)
-            | Type::Array(_, _) => return Err(IRError::NoRank(ty.clone())),
+            | Type::Array(_, _)
+            | Type::IncompleteArray(_) => return Err(IRError::NoRank(ty.clone())),
         })
     }
 
@@ -773,6 +777,9 @@ impl TackyGen {
                 Type::Pointer(_) => return Err(IRError::BadFloatConstTarget("pointer")),
                 Type::FunType(_, _) => return Err(IRError::BadFloatConstTarget("function type")),
                 Type::Array(_, _) => return Err(IRError::BadFloatConstTarget("array type")),
+                Type::IncompleteArray(_) => {
+                    return Err(IRError::BadFloatConstTarget("incomplete array type"))
+                }
             });
         }
 
@@ -816,6 +823,9 @@ impl TackyGen {
             }
             Type::Array(_, _) => {
                 return Err(IRError::BadFloatConstTarget("array from integer const"));
+            }
+            Type::IncompleteArray(_) => {
+                return Err(IRError::BadFloatConstTarget("incomplete array from integer const"));
             }
         })
     }
@@ -1026,18 +1036,52 @@ impl TackyGen {
                 match decl.storage_class {
                     None => {
                         if decl.is_definition {
-                            if let Some(init_expr) = &decl.init {
-                                let value = self.gen_expr(init_expr, instructions)?;
-                                let converted = self.convert_value(
-                                    value,
-                                    init_expr.r#type.clone(),
-                                    decl.r#type.clone(),
-                                    instructions,
-                                );
-                                instructions.push(Instruction::Copy {
-                                    src: converted,
-                                    dst: Value::Var(decl.name.clone()),
-                                });
+                            let mut handled_init = false;
+                            if let (Type::Array(elem, size), Some(init_expr)) =
+                                (&decl.r#type, &decl.init)
+                            {
+                                if Self::is_char_type(elem.as_ref()) {
+                                    if let ExprKind::String(value) = &init_expr.kind {
+                                        let (bytes, _) =
+                                            Self::char_array_bytes(value, *size)?;
+                                        let elem_size =
+                                            Self::size_of_type(elem.as_ref())?;
+                                        for (idx, byte) in bytes.iter().enumerate() {
+                                            let offset = elem_size * idx as i64;
+                                            let const_value = match elem.as_ref() {
+                                                Type::Char | Type::SChar => {
+                                                    Const::Char(*byte as i8)
+                                                }
+                                                Type::UChar => Const::UChar(*byte),
+                                                _ => unreachable!(
+                                                    "is_char_type should restrict element types"
+                                                ),
+                                            };
+                                            instructions.push(Instruction::CopyToOffset {
+                                                src: Value::Constant(const_value),
+                                                dst: decl.name.clone(),
+                                                offset,
+                                            });
+                                        }
+                                        handled_init = true;
+                                    }
+                                }
+                            }
+
+                            if !handled_init {
+                                if let Some(init_expr) = &decl.init {
+                                    let value = self.gen_expr(init_expr, instructions)?;
+                                    let converted = self.convert_value(
+                                        value,
+                                        init_expr.r#type.clone(),
+                                        decl.r#type.clone(),
+                                        instructions,
+                                    );
+                                    instructions.push(Instruction::Copy {
+                                        src: converted,
+                                        dst: Value::Var(decl.name.clone()),
+                                    });
+                                }
                             }
                             self.register_local(&decl.name, &decl.r#type);
                         }
@@ -1071,7 +1115,7 @@ impl TackyGen {
             ExprKind::Var(name) => {
                 let v = self.value_for_variable(name);
                 let storage_ty = self.type_of_value(&v)?;
-                if matches!(storage_ty, Type::Array(_, _))
+                if matches!(storage_ty, Type::Array(_, _) | Type::IncompleteArray(_))
                     && matches!(result_type, Type::Pointer(_))
                 {
                     let tmp = self.fresh_tmp();
@@ -1584,6 +1628,9 @@ impl TackyGen {
                 let len_i64 = i64::try_from(*len).map_err(|_| IRError::ArraySizeI64Overflow)?;
                 len_i64 * Self::size_of_type(inner)?
             }
+            Type::IncompleteArray(_) => {
+                return Err(IRError::Generic("incomplete array type has no size"))
+            }
             Type::Void => return Err(IRError::Generic("void type has no size")),
             Type::FunType(_, _) => return Err(IRError::Generic("function type has no size")),
         })
@@ -1786,7 +1833,9 @@ impl TackyGen {
             Type::FunType(_, _) => {
                 return Err(IRError::Generic("function type increment not supported"));
             }
-            Type::Array(_, _) => return Err(IRError::Generic("array increment not supported")),
+            Type::Array(_, _) | Type::IncompleteArray(_) => {
+                return Err(IRError::Generic("array increment not supported"))
+            }
         }
         instructions.push(Instruction::Copy {
             src: updated_tmp.clone(),
