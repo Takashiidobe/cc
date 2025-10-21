@@ -1,5 +1,6 @@
 pub(crate) mod cli;
 pub(crate) mod codegen;
+pub(crate) mod fuzzing;
 pub(crate) mod parse;
 pub(crate) mod semantic;
 pub(crate) mod tacky;

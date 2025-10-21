@@ -467,6 +467,22 @@ pub(crate) enum Const {
     Double(f64),
 }
 
+impl fmt::Display for Const {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&match self {
+            Const::Char(n) => n.to_string(),
+            Const::UChar(n) => n.to_string(),
+            Const::Short(n) => n.to_string(),
+            Const::UShort(n) => n.to_string(),
+            Const::Int(n) => n.to_string(),
+            Const::UInt(n) => n.to_string(),
+            Const::Long(n) => n.to_string(),
+            Const::ULong(n) => n.to_string(),
+            Const::Double(n) => n.to_string(),
+        })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Node<Kind> {
     pub(crate) kind: Kind,
