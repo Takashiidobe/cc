@@ -1,0 +1,7 @@
+---
+source: tests/cli.rs
+assertion_line: 84
+expression: "&mine"
+---
+stdout: ""
+status: 97

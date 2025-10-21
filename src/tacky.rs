@@ -420,9 +420,7 @@ impl TackyGen {
         let mut init_list = Vec::new();
         if let Some(expr) = init {
             match (&r#type, &expr.kind) {
-                (Type::Array(elem, size), ExprKind::String(value))
-                    if Self::is_char_type(elem.as_ref()) =>
-                {
+                (Type::Array(elem, size), ExprKind::String(value)) if elem.as_ref().is_char() => {
                     let (bytes, null_terminated) = Self::char_array_bytes(value, *size)?;
                     init_list.push(StaticInit::Bytes {
                         offset: 0,
@@ -432,7 +430,7 @@ impl TackyGen {
                 }
                 (Type::Array(_, _), _) => return Err(IRError::UnsupportedArrayInit(name.clone())),
                 (Type::IncompleteArray(_), _) => {
-                    return Err(IRError::UnsupportedArrayInit(name.clone()))
+                    return Err(IRError::UnsupportedArrayInit(name.clone()));
                 }
                 (_, ExprKind::String(value)) => {
                     let symbol = self.intern_string_literal(value);
@@ -473,13 +471,12 @@ impl TackyGen {
         Ok(match &expr.kind {
             ExprKind::Constant(Const::Char(n)) => *n as i64,
             ExprKind::Constant(Const::UChar(n)) => *n as i64,
-            ExprKind::Constant(Const::Int(n)) => *n,
+            ExprKind::Constant(Const::Int(n)) => i64::from(*n),
             ExprKind::Constant(Const::Long(n)) => *n,
             ExprKind::Constant(Const::UInt(n)) => (*n as u32) as i64,
             ExprKind::Constant(Const::ULong(n)) => *n as i64,
             Neg(inner) => -Self::eval_const_expr(inner)?,
-            BitNot(inner) => !Self::eval_const_expr(inner)?,
-            Not(inner) => !(Self::eval_const_expr(inner)?) as i64,
+            BitNot(inner) | Not(inner) => !Self::eval_const_expr(inner)?,
             Add(lhs, rhs) => Self::eval_const_expr(lhs)? + Self::eval_const_expr(rhs)?,
             Sub(lhs, rhs) => Self::eval_const_expr(lhs)? - Self::eval_const_expr(rhs)?,
             Mul(lhs, rhs) => Self::eval_const_expr(lhs)? * Self::eval_const_expr(rhs)?,
@@ -577,7 +574,7 @@ impl TackyGen {
         self.record_temp(&tmp, &to_type);
         let dst = Value::Var(tmp);
 
-        if Self::is_integer_type(&from_type) && Self::is_integer_type(&to_type) {
+        if from_type.is_integer() && to_type.is_integer() {
             let from_bits = Self::bit_width(&from_type).unwrap_or(32);
             let to_bits = Self::bit_width(&to_type).unwrap_or(32);
             if from_bits == to_bits {
@@ -586,7 +583,7 @@ impl TackyGen {
                     dst: dst.clone(),
                 });
             } else if to_bits > from_bits {
-                let instr = if Self::is_unsigned(&from_type) {
+                let instr = if from_type.is_unsigned() {
                     Instruction::ZeroExtend {
                         src: value,
                         dst: dst.clone(),
@@ -604,16 +601,16 @@ impl TackyGen {
                     dst: dst.clone(),
                 });
             }
-        } else if Self::is_numeric_type(&from_type) && Self::is_numeric_type(&to_type) {
+        } else if from_type.is_numeric() && to_type.is_numeric() {
             instructions.push(Instruction::Convert {
                 src: value,
                 dst: dst.clone(),
                 from: from_type.clone(),
                 to: to_type.clone(),
             });
-        } else if (Self::is_pointer_type(&from_type) && Self::is_pointer_type(&to_type))
-            || (Self::is_pointer_type(&from_type) && Self::is_integer_type(&to_type))
-            || (Self::is_integer_type(&from_type) && Self::is_pointer_type(&to_type))
+        } else if (from_type.is_pointer() && to_type.is_pointer())
+            || (from_type.is_pointer() && to_type.is_integer())
+            || (from_type.is_integer() && to_type.is_pointer())
         {
             instructions.push(Instruction::Copy {
                 src: value,
@@ -675,34 +672,6 @@ impl TackyGen {
         })
     }
 
-    fn is_unsigned(ty: &Type) -> bool {
-        matches!(ty, Type::UChar | Type::UInt | Type::ULong)
-    }
-    fn is_integer_type(ty: &Type) -> bool {
-        matches!(
-            ty,
-            Type::Char
-                | Type::SChar
-                | Type::UChar
-                | Type::Int
-                | Type::UInt
-                | Type::Long
-                | Type::ULong
-        )
-    }
-    fn is_char_type(ty: &Type) -> bool {
-        matches!(ty, Type::Char | Type::SChar | Type::UChar)
-    }
-    fn is_pointer_type(ty: &Type) -> bool {
-        matches!(ty, Type::Pointer(_))
-    }
-    fn is_floating_type(ty: &Type) -> bool {
-        matches!(ty, Type::Double)
-    }
-    fn is_numeric_type(ty: &Type) -> bool {
-        Self::is_integer_type(ty) || Self::is_floating_type(ty)
-    }
-
     fn type_rank(ty: &Type) -> IResult<usize> {
         Ok(match ty {
             Type::Char | Type::SChar => 0,
@@ -721,10 +690,10 @@ impl TackyGen {
     }
 
     fn common_numeric_type(lhs: &Type, rhs: &Type) -> IResult<Type> {
-        if Self::is_floating_type(lhs) || Self::is_floating_type(rhs) {
+        if lhs.is_floating() || rhs.is_floating() {
             return Ok(Type::Double);
         }
-        if !Self::is_integer_type(lhs) || !Self::is_integer_type(rhs) {
+        if !lhs.is_integer() || !rhs.is_integer() {
             return Err(IRError::UnsupportedOperands(lhs.clone(), rhs.clone()));
         }
         let lr = Self::type_rank(lhs)?;
@@ -752,7 +721,7 @@ impl TackyGen {
                 (Const::Double(v), _) => v,
                 (Const::Char(n), _) => n as f64,
                 (Const::UChar(n), _) => n as f64,
-                (Const::Int(n), _) => n as f64,
+                (Const::Int(n), _) => f64::from(n),
                 (Const::Long(n), _) => n as f64,
                 (Const::UInt(n), _) => n as f64,
                 (Const::ULong(n), _) => n as f64,
@@ -768,7 +737,7 @@ impl TackyGen {
             return Ok(match to_type {
                 Type::Char | Type::SChar => Const::Char(value as i8),
                 Type::UChar => Const::UChar(value as u8),
-                Type::Int => Const::Int(value as i64),
+                Type::Int => Const::Int(value as i32),
                 Type::Long => Const::Long(value as i64),
                 Type::UInt => Const::UInt(value as u64),
                 Type::ULong => Const::ULong(value as u64),
@@ -778,19 +747,19 @@ impl TackyGen {
                 Type::FunType(_, _) => return Err(IRError::BadFloatConstTarget("function type")),
                 Type::Array(_, _) => return Err(IRError::BadFloatConstTarget("array type")),
                 Type::IncompleteArray(_) => {
-                    return Err(IRError::BadFloatConstTarget("incomplete array type"))
+                    return Err(IRError::BadFloatConstTarget("incomplete array type"));
                 }
             });
         }
 
         let from_bits = Self::bit_width(from_type)?;
         let to_bits = Self::bit_width(to_type)?;
-        let from_unsigned = Self::is_unsigned(from_type);
+        let from_unsigned = from_type.is_unsigned();
 
         let mut raw = match constant {
             Const::Char(n) => (n as i32 as u32) as u128,
             Const::UChar(n) => (n as u32) as u128,
-            Const::Int(n) => (n as i32 as u32) as u128,
+            Const::Int(n) => (n as u32) as u128,
             Const::UInt(n) => (n as u32) as u128,
             Const::Long(n) => (n as u64) as u128,
             Const::ULong(n) => n as u128,
@@ -809,7 +778,7 @@ impl TackyGen {
         Ok(match to_type {
             Type::Char | Type::SChar => Const::Char(raw as i8),
             Type::UChar => Const::UChar(raw as u8),
-            Type::Int => Const::Int(raw as i64),
+            Type::Int => Const::Int(raw as i32),
             Type::UInt => Const::UInt(raw as u64),
             Type::Long => Const::Long(raw as i64),
             Type::ULong => Const::ULong(raw as u64),
@@ -825,7 +794,9 @@ impl TackyGen {
                 return Err(IRError::BadFloatConstTarget("array from integer const"));
             }
             Type::IncompleteArray(_) => {
-                return Err(IRError::BadFloatConstTarget("incomplete array from integer const"));
+                return Err(IRError::BadFloatConstTarget(
+                    "incomplete array from integer const",
+                ));
             }
         })
     }
@@ -1039,13 +1010,12 @@ impl TackyGen {
                             let mut handled_init = false;
                             if let (Type::Array(elem, size), Some(init_expr)) =
                                 (&decl.r#type, &decl.init)
+                                && elem.as_ref().is_char()
                             {
-                                if Self::is_char_type(elem.as_ref()) {
+                                {
                                     if let ExprKind::String(value) = &init_expr.kind {
-                                        let (bytes, _) =
-                                            Self::char_array_bytes(value, *size)?;
-                                        let elem_size =
-                                            Self::size_of_type(elem.as_ref())?;
+                                        let (bytes, _) = Self::char_array_bytes(value, *size)?;
+                                        let elem_size = Self::size_of_type(elem.as_ref())?;
                                         for (idx, byte) in bytes.iter().enumerate() {
                                             let offset = elem_size * idx as i64;
                                             let const_value = match elem.as_ref() {
@@ -1054,7 +1024,7 @@ impl TackyGen {
                                                 }
                                                 Type::UChar => Const::UChar(*byte),
                                                 _ => unreachable!(
-                                                    "is_char_type should restrict element types"
+                                                    "element type is verified as char-compatible"
                                                 ),
                                             };
                                             instructions.push(Instruction::CopyToOffset {
@@ -1068,20 +1038,18 @@ impl TackyGen {
                                 }
                             }
 
-                            if !handled_init {
-                                if let Some(init_expr) = &decl.init {
-                                    let value = self.gen_expr(init_expr, instructions)?;
-                                    let converted = self.convert_value(
-                                        value,
-                                        init_expr.r#type.clone(),
-                                        decl.r#type.clone(),
-                                        instructions,
-                                    );
-                                    instructions.push(Instruction::Copy {
-                                        src: converted,
-                                        dst: Value::Var(decl.name.clone()),
-                                    });
-                                }
+                            if !handled_init && let Some(init_expr) = &decl.init {
+                                let value = self.gen_expr(init_expr, instructions)?;
+                                let converted = self.convert_value(
+                                    value,
+                                    init_expr.r#type.clone(),
+                                    decl.r#type.clone(),
+                                    instructions,
+                                );
+                                instructions.push(Instruction::Copy {
+                                    src: converted,
+                                    dst: Value::Var(decl.name.clone()),
+                                });
                             }
                             self.register_local(&decl.name, &decl.r#type);
                         }
@@ -1192,7 +1160,7 @@ impl TackyGen {
                 instructions,
             ),
             ExprKind::Equal(lhs, rhs) => {
-                if Self::is_pointer_type(&lhs.r#type) || Self::is_pointer_type(&rhs.r#type) {
+                if lhs.r#type.is_pointer() || rhs.r#type.is_pointer() {
                     self.gen_pointer_equality(
                         BinaryOp::Equal,
                         lhs,
@@ -1205,7 +1173,7 @@ impl TackyGen {
                 }
             }
             ExprKind::NotEqual(lhs, rhs) => {
-                if Self::is_pointer_type(&lhs.r#type) || Self::is_pointer_type(&rhs.r#type) {
+                if lhs.r#type.is_pointer() || rhs.r#type.is_pointer() {
                     self.gen_pointer_equality(
                         BinaryOp::NotEqual,
                         lhs,
@@ -1478,8 +1446,8 @@ impl TackyGen {
         result_type: &Type,
         instructions: &mut Vec<Instruction>,
     ) -> IResult<Value> {
-        let lp = Self::is_pointer_type(&lhs.r#type);
-        let rp = Self::is_pointer_type(&rhs.r#type);
+        let lp = lhs.r#type.is_pointer();
+        let rp = rhs.r#type.is_pointer();
         Ok(match (lp, rp) {
             (true, false) => self.gen_pointer_add(lhs, rhs, result_type, false, instructions)?,
             (false, true) => self.gen_pointer_add(rhs, lhs, result_type, false, instructions)?,
@@ -1497,8 +1465,8 @@ impl TackyGen {
         result_type: &Type,
         instructions: &mut Vec<Instruction>,
     ) -> IResult<Value> {
-        let lp = Self::is_pointer_type(&lhs.r#type);
-        let rp = Self::is_pointer_type(&rhs.r#type);
+        let lp = lhs.r#type.is_pointer();
+        let rp = rhs.r#type.is_pointer();
         Ok(match (lp, rp) {
             (true, false) => self.gen_pointer_add(lhs, rhs, result_type, true, instructions)?,
             (true, true) => self.gen_pointer_difference(lhs, rhs, result_type, instructions)?,
@@ -1629,7 +1597,7 @@ impl TackyGen {
                 len_i64 * Self::size_of_type(inner)?
             }
             Type::IncompleteArray(_) => {
-                return Err(IRError::Generic("incomplete array type has no size"))
+                return Err(IRError::Generic("incomplete array type has no size"));
             }
             Type::Void => return Err(IRError::Generic("void type has no size")),
             Type::FunType(_, _) => return Err(IRError::Generic("function type has no size")),
@@ -1834,7 +1802,7 @@ impl TackyGen {
                 return Err(IRError::Generic("function type increment not supported"));
             }
             Type::Array(_, _) | Type::IncompleteArray(_) => {
-                return Err(IRError::Generic("array increment not supported"))
+                return Err(IRError::Generic("array increment not supported"));
             }
         }
         instructions.push(Instruction::Copy {

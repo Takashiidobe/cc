@@ -96,6 +96,39 @@ pub enum CodegenError {
 
 type Result<T = ()> = std::result::Result<T, CodegenError>;
 
+impl Type {
+    fn type_size(&self) -> Result<i64> {
+        let sz = match self {
+            Type::Void => 0,
+            Type::Char | Type::SChar | Type::UChar => 1,
+            Type::Int | Type::UInt => 4,
+            Type::Long | Type::ULong | Type::Double | Type::Pointer(_) => 8,
+            Type::FunType(_, _) | Type::IncompleteArray(_) => {
+                return Err(CodegenError::TypeHasNoSize(self.clone()));
+            }
+            Type::Array(inner, len) => {
+                let len_i64 = i64::try_from(*len)
+                    .map_err(|_| CodegenError::ArraySizeTooLarge((*len) as u128))?;
+                len_i64 * inner.type_size()?
+            }
+        };
+        Ok(sz)
+    }
+
+    fn type_align(&self) -> Result<i64> {
+        let a = match self {
+            Type::Char | Type::SChar | Type::UChar | Type::Void => 1,
+            Type::Int | Type::UInt => 4,
+            Type::Long | Type::ULong | Type::Double | Type::Pointer(_) => 8,
+            Type::FunType(_, _) | Type::IncompleteArray(_) => {
+                return Err(CodegenError::TypeHasNoAlignment(self.clone()));
+            }
+            Type::Array(inner, _) => inner.type_align()?,
+        };
+        Ok(a)
+    }
+}
+
 pub struct Codegen<W: Write> {
     pub buf: W,
     stack_map: BTreeMap<String, i64>,
@@ -211,10 +244,10 @@ impl<W: Write> Codegen<W> {
         if var.global {
             writeln!(self.buf, ".globl {}", var.name)?;
         }
-        let align = Self::type_align(&var.ty)?;
+        let align = var.ty.type_align()?;
         writeln!(self.buf, ".align {}", align)?;
         writeln!(self.buf, "{}:", var.name)?;
-        let size = Self::type_size(&var.ty)?;
+        let size = var.ty.type_size()?;
         match init_entry {
             None => writeln!(self.buf, "  .zero {}", size)?,
             Some(init) => self.emit_static_init_for_type(&var.ty, init)?,
@@ -360,7 +393,7 @@ impl<W: Write> Codegen<W> {
 
     fn emit_static_constant(&mut self, constant: &StaticConstant) -> Result<()> {
         writeln!(self.buf, ".data")?;
-        let align = Self::type_align(&constant.ty)?;
+        let align = constant.ty.type_align()?;
         writeln!(self.buf, ".align {}", align)?;
         writeln!(self.buf, "{}:", constant.name)?;
         self.emit_static_init_for_type(&constant.ty, &constant.init)
@@ -491,8 +524,8 @@ impl<W: Write> Codegen<W> {
                     self.value_types
                 ))
             })?;
-            let size = Self::type_size(&ty)?;
-            let align = Self::type_align(&ty)?;
+            let size = ty.type_size()?;
+            let align = ty.type_align()?;
             if offset % align != 0 {
                 offset += align - (offset % align);
             }
@@ -1181,6 +1214,38 @@ impl<W: Write> Codegen<W> {
                 )?;
                 self.store_reg_into_value(Reg::R11, dst)
             }
+            (Type::Char | Type::SChar, Type::Double) => {
+                self.load_value_into_reg(src, Reg::R11)?;
+                writeln!(
+                    self.buf,
+                    "  movsbl {}, {}",
+                    Reg::R11.reg_name8(),
+                    Reg::R11.reg_name32()
+                )?;
+                writeln!(
+                    self.buf,
+                    "  cvtsi2sd {}, {}",
+                    Reg::R11.reg_name32(),
+                    Self::xmm_name(0)?
+                )?;
+                self.store_xmm_into_value(0, dst)
+            }
+            (Type::UChar, Type::Double) => {
+                self.load_value_into_reg(src, Reg::R11)?;
+                writeln!(
+                    self.buf,
+                    "  movzbl {}, {}",
+                    Reg::R11.reg_name8(),
+                    Reg::R11.reg_name32()
+                )?;
+                writeln!(
+                    self.buf,
+                    "  cvtsi2sd {}, {}",
+                    Reg::R11.reg_name32(),
+                    Self::xmm_name(0)?
+                )?;
+                self.store_xmm_into_value(0, dst)
+            }
             (Type::Int, Type::Double) => {
                 self.load_value_into_reg(src, Reg::R11)?;
                 writeln!(
@@ -1510,35 +1575,6 @@ impl<W: Write> Codegen<W> {
             .get(name)
             .ok_or_else(|| CodegenError::UndefinedStackSlot(name.to_string()))?;
         Ok(format!("{}(%rbp)", offset))
-    }
-
-    fn type_size(ty: &Type) -> Result<i64> {
-        let sz = match ty {
-            Type::Void => 0,
-            Type::Char | Type::SChar | Type::UChar => 1,
-            Type::Int | Type::UInt => 4,
-            Type::Long | Type::ULong | Type::Double | Type::Pointer(_) => 8,
-            Type::FunType(_, _) => return Err(CodegenError::TypeHasNoSize(ty.clone())),
-            Type::Array(inner, len) => {
-                let len_i64 = i64::try_from(*len)
-                    .map_err(|_| CodegenError::ArraySizeTooLarge((*len) as u128))?;
-                len_i64 * Self::type_size(inner)?
-            }
-            Type::IncompleteArray(_) => return Err(CodegenError::TypeHasNoSize(ty.clone())),
-        };
-        Ok(sz)
-    }
-
-    fn type_align(ty: &Type) -> Result<i64> {
-        let a = match ty {
-            Type::Char | Type::SChar | Type::UChar | Type::Void => 1,
-            Type::Int | Type::UInt => 4,
-            Type::Long | Type::ULong | Type::Double | Type::Pointer(_) => 8,
-            Type::FunType(_, _) => return Err(CodegenError::TypeHasNoAlignment(ty.clone())),
-            Type::Array(inner, _) => Self::type_align(inner)?,
-            Type::IncompleteArray(_) => return Err(CodegenError::TypeHasNoAlignment(ty.clone())),
-        };
-        Ok(a)
     }
 
     fn mov_instr(&self, ty: &Type) -> Result<&'static str> {

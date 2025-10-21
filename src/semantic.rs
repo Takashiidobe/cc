@@ -248,9 +248,7 @@ impl SemanticAnalyzer {
         let init = decl.init.take().map(|expr| {
             let analyzed = self.analyze_expr(expr)?;
             match (&decl.r#type, &analyzed.kind) {
-                (Type::Array(elem, _), ExprKind::String(_))
-                    if Self::is_char_type(elem.as_ref()) =>
-                {
+                (Type::Array(elem, _), ExprKind::String(_)) if elem.as_ref().is_char() => {
                     // handled during IR generation
                 }
                 (Type::Array(_, _), _) => {
@@ -259,7 +257,7 @@ impl SemanticAnalyzer {
                     ));
                 }
                 (Type::IncompleteArray(elem), ExprKind::String(value))
-                    if Self::is_char_type(elem.as_ref()) =>
+                    if elem.as_ref().is_char() =>
                 {
                     let size = value.len() + 1;
                     decl.r#type = Type::Array(elem.clone(), size);
@@ -270,10 +268,7 @@ impl SemanticAnalyzer {
                     ));
                 }
                 (_, ExprKind::String(_)) => {
-                    if !matches!(
-                        &decl.r#type,
-                        Type::Pointer(inner) if Self::is_char_type(inner.as_ref())
-                    ) {
+                    if !matches!(&decl.r#type, Type::Pointer(inner) if inner.as_ref().is_char()) {
                         return Err(SemanticError::InvalidStringLiteral(decl.r#type.clone()));
                     }
                 }
@@ -307,9 +302,7 @@ impl SemanticAnalyzer {
         let init = decl.init.take().map(|expr| {
             let analyzed = self.analyze_expr(expr)?;
             match (&decl.r#type, &analyzed.kind) {
-                (Type::Array(elem, _), ExprKind::String(_))
-                    if Self::is_char_type(elem.as_ref()) =>
-                {
+                (Type::Array(elem, _), ExprKind::String(_)) if elem.as_ref().is_char() => {
                     // handled later during IR lowering
                 }
                 (Type::Array(_, _), _) => {
@@ -318,7 +311,7 @@ impl SemanticAnalyzer {
                     ));
                 }
                 (Type::IncompleteArray(elem), ExprKind::String(value))
-                    if Self::is_char_type(elem.as_ref()) =>
+                    if elem.as_ref().is_char() =>
                 {
                     let size = value.len() + 1;
                     decl.r#type = Type::Array(elem.clone(), size);
@@ -329,10 +322,7 @@ impl SemanticAnalyzer {
                     ));
                 }
                 (_, ExprKind::String(_)) => {
-                    if !matches!(
-                        &decl.r#type,
-                        Type::Pointer(inner) if Self::is_char_type(inner.as_ref())
-                    ) {
+                    if !matches!(&decl.r#type, Type::Pointer(inner) if inner.as_ref().is_char()) {
                         return Err(SemanticError::InvalidStringLiteral(decl.r#type.clone()));
                     }
                 }
@@ -663,11 +653,9 @@ impl SemanticAnalyzer {
                 let else_expr = self.analyze_expr(*else_expr)?;
                 let then_type = then_expr.r#type.clone();
                 let else_type = else_expr.r#type.clone();
-                let result_type = if Self::is_numeric_type(&then_type)
-                    && Self::is_numeric_type(&else_type)
-                {
+                let result_type = if then_type.is_numeric() && else_type.is_numeric() {
                     self.numeric_result_type(&then_type, &else_type)?
-                } else if Self::is_pointer_type(&then_type) && Self::is_pointer_type(&else_type) {
+                } else if then_type.is_pointer() && else_type.is_pointer() {
                     if !Self::pointer_types_compatible(&then_type, &else_type) {
                         return Err(SemanticError::ConditionalTypeMismatch(then_type, else_type));
                     }
@@ -948,12 +936,12 @@ impl SemanticAnalyzer {
         let lhs_type = lhs.r#type.clone();
         let rhs_type = rhs.r#type.clone();
 
-        let result_type = if Self::is_numeric_type(&lhs_type) && Self::is_numeric_type(&rhs_type) {
+        let result_type = if lhs_type.is_numeric() && rhs_type.is_numeric() {
             self.numeric_result_type(&lhs_type, &rhs_type)?
-        } else if Self::is_pointer_type(&lhs_type) && Self::is_integer_type(&rhs_type) {
+        } else if lhs_type.is_pointer() && rhs_type.is_integer() {
             self.pointer_arithmetic_base(&lhs_type, "pointer addition")?;
             lhs_type.clone()
-        } else if Self::is_integer_type(&lhs_type) && Self::is_pointer_type(&rhs_type) {
+        } else if lhs_type.is_integer() && rhs_type.is_pointer() {
             self.pointer_arithmetic_base(&rhs_type, "pointer addition")?;
             rhs_type.clone()
         } else {
@@ -982,12 +970,12 @@ impl SemanticAnalyzer {
         let lhs_type = lhs.r#type.clone();
         let rhs_type = rhs.r#type.clone();
 
-        let result_type = if Self::is_numeric_type(&lhs_type) && Self::is_numeric_type(&rhs_type) {
+        let result_type = if lhs_type.is_numeric() && rhs_type.is_numeric() {
             self.numeric_result_type(&lhs_type, &rhs_type)?
-        } else if Self::is_pointer_type(&lhs_type) && Self::is_integer_type(&rhs_type) {
+        } else if lhs_type.is_pointer() && rhs_type.is_integer() {
             self.pointer_arithmetic_base(&lhs_type, "pointer subtraction")?;
             lhs_type.clone()
-        } else if Self::is_pointer_type(&lhs_type) && Self::is_pointer_type(&rhs_type) {
+        } else if lhs_type.is_pointer() && rhs_type.is_pointer() {
             let lhs_base = self.pointer_arithmetic_base(&lhs_type, "pointer subtraction")?;
             let rhs_base = self.pointer_arithmetic_base(&rhs_type, "pointer subtraction")?;
             if lhs_base != rhs_base {
@@ -1073,7 +1061,7 @@ impl SemanticAnalyzer {
     {
         let lhs = self.analyze_expr(lhs)?;
         let rhs = self.analyze_expr(rhs)?;
-        if Self::is_pointer_type(&lhs.r#type) || Self::is_pointer_type(&rhs.r#type) {
+        if lhs.r#type.is_pointer() || rhs.r#type.is_pointer() {
             self.ensure_pointer_comparable(&lhs.r#type, &rhs.r#type, "equality comparison")?;
         } else {
             self.ensure_numeric_type(&lhs.r#type, "comparison operand")?;
@@ -1139,7 +1127,7 @@ impl SemanticAnalyzer {
     }
 
     fn numeric_result_type(&self, lhs: &Type, rhs: &Type) -> Result<Type, SemanticError> {
-        if !Self::is_numeric_type(lhs) || !Self::is_numeric_type(rhs) {
+        if !lhs.is_numeric() || !rhs.is_numeric() {
             return Err(SemanticError::IncompatibleForContext(
                 "numeric expression",
                 lhs.clone(),
@@ -1147,7 +1135,7 @@ impl SemanticAnalyzer {
             ));
         }
 
-        if Self::is_floating_type(lhs) || Self::is_floating_type(rhs) {
+        if lhs.is_floating() || rhs.is_floating() {
             return Ok(Type::Double);
         }
 
@@ -1158,7 +1146,7 @@ impl SemanticAnalyzer {
 
     fn ensure_integer_type(&self, ty: &Type, context: &'static str) -> Result<(), SemanticError> {
         let ty = self.decay_array_type(ty);
-        if Self::is_integer_type(&ty) {
+        if ty.is_integer() {
             Ok(())
         } else {
             Err(SemanticError::IntegerTypeRequired(context, ty))
@@ -1167,7 +1155,7 @@ impl SemanticAnalyzer {
 
     fn ensure_condition_type(&self, ty: &Type, context: &'static str) -> Result<(), SemanticError> {
         let ty = self.decay_array_type(ty);
-        if Self::is_integer_type(&ty) || Self::is_pointer_type(&ty) {
+        if ty.is_integer() || ty.is_pointer() {
             Ok(())
         } else {
             Err(SemanticError::ScalarTypeRequired(context, ty))
@@ -1176,7 +1164,7 @@ impl SemanticAnalyzer {
 
     fn ensure_numeric_type(&self, ty: &Type, context: &'static str) -> Result<(), SemanticError> {
         let ty = self.decay_array_type(ty);
-        if Self::is_numeric_type(&ty) {
+        if ty.is_numeric() {
             Ok(())
         } else {
             Err(SemanticError::NumericTypeRequired(context, ty))
@@ -1201,17 +1189,15 @@ impl SemanticAnalyzer {
             return Ok(());
         }
 
-        if Self::is_numeric_type(target) && Self::is_numeric_type(&value_type) {
+        if target.is_numeric() && value_type.is_numeric() {
             return Ok(());
         }
 
-        if Self::is_pointer_type(target) {
-            if Self::is_pointer_type(&value_type)
-                && Self::pointer_types_compatible(target, &value_type)
-            {
+        if target.is_pointer() {
+            if value_type.is_pointer() && Self::pointer_types_compatible(target, &value_type) {
                 return Ok(());
             }
-            if Self::is_integer_type(&value_type) {
+            if value_type.is_integer() {
                 return Ok(());
             }
         }
@@ -1223,43 +1209,14 @@ impl SemanticAnalyzer {
         ))
     }
 
-    fn is_integer_type(ty: &Type) -> bool {
-        matches!(
-            ty,
-            Type::Char
-                | Type::SChar
-                | Type::UChar
-                | Type::Int
-                | Type::UInt
-                | Type::Long
-                | Type::ULong
-        )
-    }
-
-    fn is_pointer_type(ty: &Type) -> bool {
-        matches!(ty, Type::Pointer(_))
-    }
-
-    fn is_floating_type(ty: &Type) -> bool {
-        matches!(ty, Type::Double)
-    }
-
-    fn is_numeric_type(ty: &Type) -> bool {
-        Self::is_integer_type(ty) || Self::is_floating_type(ty)
-    }
-
-    fn is_char_type(ty: &Type) -> bool {
-        matches!(ty, Type::Char | Type::SChar | Type::UChar)
-    }
-
     fn ensure_castable(&self, from: &Type, to: &Type) -> Result<(), SemanticError> {
         let from_type = self.decay_array_type(from);
         let to_type = self.decay_array_type(to);
 
-        if (Self::is_numeric_type(&from_type) && Self::is_numeric_type(&to_type))
-            || (Self::is_pointer_type(&from_type) && Self::is_pointer_type(&to_type))
-            || (Self::is_pointer_type(&from_type) && Self::is_integer_type(&to_type))
-            || (Self::is_integer_type(&from_type) && Self::is_pointer_type(&to_type))
+        if (from_type.is_numeric() && to_type.is_numeric())
+            || (from_type.is_pointer() && to_type.is_pointer())
+            || (from_type.is_pointer() && to_type.is_integer())
+            || (from_type.is_integer() && to_type.is_pointer())
         {
             return Ok(());
         }
@@ -1307,15 +1264,15 @@ impl SemanticAnalyzer {
         let lhs_type = self.decay_array_type(lhs);
         let rhs_type = self.decay_array_type(rhs);
 
-        if Self::is_pointer_type(&lhs_type) && Self::is_pointer_type(&rhs_type) {
+        if lhs_type.is_pointer() && rhs_type.is_pointer() {
             if Self::pointer_types_compatible(&lhs_type, &rhs_type) {
                 return Ok(());
             }
             return Err(SemanticError::IncompatibleForContext(
                 context, lhs_type, rhs_type,
             ));
-        } else if (Self::is_pointer_type(&lhs_type) && Self::is_integer_type(&rhs_type))
-            || (Self::is_integer_type(&lhs_type) && Self::is_pointer_type(&rhs_type))
+        } else if (lhs_type.is_pointer() && rhs_type.is_integer())
+            || (lhs_type.is_integer() && rhs_type.is_pointer())
         {
             return Ok(());
         }

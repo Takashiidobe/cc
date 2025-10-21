@@ -84,6 +84,9 @@ pub enum ParserError {
     #[error("Expected primary expression, found {0:?}")]
     ExpectedPrimary(TokenKind),
 
+    #[error("integer literal '{0}' does not fit in 32 bits")]
+    IntegerLiteralOutOfRange(i64),
+
     #[error("internal: token stream moved beyond end")]
     CursorPastEnd,
 }
@@ -269,13 +272,42 @@ impl Type {
     pub(crate) fn is_unsigned(&self) -> bool {
         matches!(self, Type::UChar | Type::UInt | Type::ULong)
     }
+
+    pub(crate) fn is_pointer(&self) -> bool {
+        matches!(self, Type::Pointer(_))
+    }
+
+    pub(crate) fn is_integer(&self) -> bool {
+        matches!(
+            self,
+            Type::Char
+                | Type::SChar
+                | Type::UChar
+                | Type::Int
+                | Type::UInt
+                | Type::Long
+                | Type::ULong
+        )
+    }
+
+    pub(crate) fn is_char(&self) -> bool {
+        matches!(self, Type::Char | Type::SChar | Type::UChar)
+    }
+
+    pub(crate) fn is_floating(&self) -> bool {
+        matches!(self, Type::Double)
+    }
+
+    pub(crate) fn is_numeric(&self) -> bool {
+        self.is_integer() || self.is_floating()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Const {
     Char(i8),
     UChar(u8),
-    Int(i64),
+    Int(i32),
     Long(i64),
     UInt(u64),
     ULong(u64),
@@ -1683,8 +1715,10 @@ impl Parser {
         match kind.clone() {
             TokenKind::Integer(n) => {
                 self.advance()?;
+                let value =
+                    i32::try_from(n).map_err(|_| ParserError::IntegerLiteralOutOfRange(n))?;
                 Ok(Expr {
-                    kind: ExprKind::Constant(Const::Int(n)),
+                    kind: ExprKind::Constant(Const::Int(value)),
                     start,
                     end,
                     source,
