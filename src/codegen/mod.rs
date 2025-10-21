@@ -1,99 +1,17 @@
-use std::collections::{BTreeMap, BTreeSet};
-use std::fmt::{self, Write as FmtWrite};
-use std::io::Write;
+pub mod error;
+pub mod reg;
 
+use crate::codegen::error::{CodegenError, Result};
+use std::collections::{BTreeMap, BTreeSet};
+use std::fmt::Write as FmtWrite;
+use std::io::{self, Write};
+
+use crate::codegen::reg::{ARGUMENT_REGISTERS, Ext, FloatReg, Reg};
 use crate::parse::{Const, Type, Width};
 use crate::tacky::{
     BinaryOp, Function, Instruction, Program as TackyProgram, StaticConstant, StaticInit,
     StaticVariable, TopLevel, UnaryOp, Value,
 };
-
-#[derive(thiserror::Error, Debug)]
-pub enum CodegenError {
-    #[error("io error: {0}")]
-    Io(#[from] std::io::Error),
-
-    #[error("invalid float register index {0}")]
-    InvalidFloatRegIndex(usize),
-    #[error("unsupported xmm register index {0}")]
-    UnsupportedXmmIndex(usize),
-    #[error("general-purpose register requested for unsupported type {0:?}")]
-    GprRequestedFor(Type),
-
-    #[error("compound static initializers are not supported yet")]
-    CompoundStaticInitializerUnsupported,
-    #[error("unsupported scalar static initializer {0:?} <- {1:?}")]
-    UnsupportedScalarStaticInitializer(Type, Const),
-    #[error("byte initializer only supported for array types (found {0:?})")]
-    ByteInitializerOnlyForArray(Type),
-    #[error("label initializer requires pointer type (found {0:?})")]
-    LabelInitializerRequiresPointer(Type),
-    #[error("null-terminated initializer missing trailing NUL byte")]
-    MissingTrailingNullInAsciz,
-
-    #[error("type has no size: {0:?}")]
-    TypeHasNoSize(Type),
-    #[error("type has no alignment: {0:?}")]
-    TypeHasNoAlignment(Type),
-    #[error("array size exceeds i64: {0}")]
-    ArraySizeTooLarge(u128),
-
-    #[error("unsupported function return type {0:?}")]
-    UnsupportedFunctionReturnType(Type),
-    #[error("array return type not yet supported in codegen")]
-    ArrayReturnTypeUnsupported,
-    #[error("missing type information for value '{0}'")]
-    MissingTypeInfoForValue(String),
-    #[error("missing type information for parameter '{0}'")]
-    MissingTypeInfoForParam(String),
-
-    #[error("attempted to access undefined stack slot '{0}'")]
-    UndefinedStackSlot(String),
-    #[error("address destination cannot be a constant")]
-    AddressDestCannotBeConstant,
-    #[error("cannot take address of a constant")]
-    CannotTakeAddressOfConstant,
-
-    #[error("copy destination cannot be a constant")]
-    CopyDestCannotBeConstant,
-    #[error("cannot store into a constant")]
-    CannotStoreIntoConstant,
-    #[error("cannot store double via general-purpose register")]
-    StoreDoubleViaGpr,
-    #[error("attempted to load double into general-purpose register")]
-    LoadDoubleIntoGpr,
-    #[error("unsupported load into xmm for value {0:?}")]
-    UnsupportedLoadIntoXmm(Value),
-
-    #[error("invalid unary op {0:?} for type {1:?}")]
-    InvalidUnaryOpForType(UnaryOp, Type),
-    #[error("invalid binary op {0:?} for types {1:?} and {2:?}")]
-    InvalidBinaryOpForTypes(BinaryOp, Type, Type),
-
-    #[error("division or remainder not supported for type {0:?}")]
-    DivisionUnsupportedForType(Type),
-
-    #[error("AddPtr destination cannot be a constant")]
-    AddPtrDestCannotBeConstant,
-    #[error("AddPtr destination must be a pointer type (found {0:?})")]
-    AddPtrDestMustBePointer(Type),
-
-    #[error("unsupported conversion {0:?} -> {1:?}")]
-    UnsupportedConversion(Type, Type),
-    #[error("unsupported sign extension {0:?} -> {1:?}")]
-    UnsupportedSignExtend(Type, Type),
-
-    #[error("CopyToOffset not supported for type {0:?}")]
-    CopyToOffsetUnsupported(Type),
-
-    #[error("unknown value type")]
-    UnknownValueType,
-
-    #[error("mov instruction requested for unsupported type {0:?}")]
-    MovUnsupported(Type),
-}
-
-type Result<T = ()> = std::result::Result<T, CodegenError>;
 
 pub struct Codegen<W: Write> {
     pub buf: W,
@@ -102,68 +20,6 @@ pub struct Codegen<W: Write> {
     global_types: BTreeMap<String, Type>,
     value_types: BTreeMap<String, Type>,
 }
-
-#[derive(Debug, Clone, Copy)]
-enum Reg {
-    AX,
-    CX,
-    DX,
-    DI,
-    SI,
-    R8,
-    R9,
-    R10,
-    R11,
-}
-
-#[derive(Debug, Clone, Copy)]
-enum FloatReg {
-    XMM0,
-    XMM1,
-    XMM2,
-    XMM3,
-    XMM4,
-    XMM5,
-    XMM6,
-    XMM7,
-}
-
-impl FloatReg {
-    const COUNT: usize = 8;
-}
-
-impl From<usize> for FloatReg {
-    fn from(value: usize) -> Self {
-        match value {
-            0 => FloatReg::XMM0,
-            1 => FloatReg::XMM1,
-            2 => FloatReg::XMM2,
-            3 => FloatReg::XMM3,
-            4 => FloatReg::XMM4,
-            5 => FloatReg::XMM5,
-            6 => FloatReg::XMM6,
-            7 => FloatReg::XMM7,
-            _ => FloatReg::XMM7,
-        }
-    }
-}
-
-impl fmt::Display for FloatReg {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            FloatReg::XMM0 => "%xmm0",
-            FloatReg::XMM1 => "%xmm1",
-            FloatReg::XMM2 => "%xmm2",
-            FloatReg::XMM3 => "%xmm3",
-            FloatReg::XMM4 => "%xmm4",
-            FloatReg::XMM5 => "%xmm5",
-            FloatReg::XMM6 => "%xmm6",
-            FloatReg::XMM7 => "%xmm7",
-        })
-    }
-}
-
-const ARGUMENT_REGISTERS: [Reg; 6] = [Reg::DI, Reg::SI, Reg::DX, Reg::CX, Reg::R8, Reg::R9];
 
 impl<W: Write> Codegen<W> {
     pub fn new(buf: W) -> Self {
@@ -1582,13 +1438,7 @@ impl<W: Write> Codegen<W> {
         }
     }
 
-    fn emit_widen(
-        &mut self,
-        src: Reg,
-        src_ty: Type,
-        dst: Reg,
-        dst_ty: Type,
-    ) -> std::io::Result<()> {
+    fn emit_widen(&mut self, src: Reg, src_ty: Type, dst: Reg, dst_ty: Type) -> io::Result<()> {
         use Ext::*;
         use Width::*;
 
@@ -1700,84 +1550,6 @@ impl<W: Write> Codegen<W> {
                 dst.reg_name64()
             ),
             _ => panic!(),
-        }
-    }
-}
-
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-enum Ext {
-    Unknown,
-    Zero,
-    Sign,
-}
-
-impl Reg {
-    fn reg_name_for_type(&self, ty: &Type) -> Result<&'static str> {
-        match ty {
-            Type::Char | Type::SChar | Type::UChar => Ok(self.reg_name8()),
-            Type::Short | Type::UShort => Ok(self.reg_name16()),
-            Type::Int | Type::UInt => Ok(self.reg_name32()),
-            Type::Long | Type::ULong | Type::Void | Type::Pointer(_) => Ok(self.reg_name64()),
-            Type::Double | Type::FunType(_, _) | Type::Array(_, _) | Type::IncompleteArray(_) => {
-                Err(CodegenError::GprRequestedFor(ty.clone()))
-            }
-        }
-    }
-
-    fn reg_name64(&self) -> &'static str {
-        match self {
-            Reg::AX => "%rax",
-            Reg::CX => "%rcx",
-            Reg::DX => "%rdx",
-            Reg::DI => "%rdi",
-            Reg::SI => "%rsi",
-            Reg::R8 => "%r8",
-            Reg::R9 => "%r9",
-            Reg::R10 => "%r10",
-            Reg::R11 => "%r11",
-        }
-    }
-
-    fn reg_name32(&self) -> &'static str {
-        match self {
-            Reg::AX => "%eax",
-            Reg::CX => "%ecx",
-            Reg::DX => "%edx",
-            Reg::DI => "%edi",
-            Reg::SI => "%esi",
-            Reg::R8 => "%r8d",
-            Reg::R9 => "%r9d",
-            Reg::R10 => "%r10d",
-            Reg::R11 => "%r11d",
-        }
-    }
-
-    #[allow(unused)]
-    fn reg_name16(&self) -> &'static str {
-        match self {
-            Reg::AX => "%ax",
-            Reg::CX => "%cx",
-            Reg::DX => "%dx",
-            Reg::DI => "%di",
-            Reg::SI => "%si",
-            Reg::R8 => "%r8w",
-            Reg::R9 => "%r9w",
-            Reg::R10 => "%r10w",
-            Reg::R11 => "%r11w",
-        }
-    }
-
-    fn reg_name8(&self) -> &'static str {
-        match self {
-            Reg::AX => "%al",
-            Reg::CX => "%cl",
-            Reg::DX => "%dl",
-            Reg::DI => "%dil",
-            Reg::SI => "%sil",
-            Reg::R8 => "%r8b",
-            Reg::R9 => "%r9b",
-            Reg::R10 => "%r10b",
-            Reg::R11 => "%r11b",
         }
     }
 }

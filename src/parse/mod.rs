@@ -229,7 +229,7 @@ pub enum ForInit {
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub(crate) enum Width {
+pub enum Width {
     W8,
     W16,
     W32,
@@ -275,8 +275,9 @@ impl fmt::Display for Type {
         }
     }
 }
+
 impl Type {
-    pub(crate) fn type_rank(&self) -> usize {
+    pub fn type_rank(&self) -> usize {
         match self {
             Type::Char | Type::SChar => 0,
             Type::UChar => 1,
@@ -294,23 +295,23 @@ impl Type {
             | Type::IncompleteArray(_) => panic!("Cannot be compared"),
         }
     }
-    pub(crate) fn is_void(&self) -> bool {
+    pub fn is_void(&self) -> bool {
         matches!(self, Type::Void)
     }
 
-    pub(crate) fn is_unsigned(&self) -> bool {
+    pub fn is_unsigned(&self) -> bool {
         matches!(self, Type::UChar | Type::UInt | Type::ULong)
     }
 
-    pub(crate) fn is_signed(&self) -> bool {
+    pub fn is_signed(&self) -> bool {
         self.is_integer() && !self.is_unsigned()
     }
 
-    pub(crate) fn is_pointer(&self) -> bool {
+    pub fn is_pointer(&self) -> bool {
         matches!(self, Type::Pointer(_))
     }
 
-    pub(crate) fn is_integer(&self) -> bool {
+    pub fn is_integer(&self) -> bool {
         matches!(
             self,
             Type::Char
@@ -325,7 +326,7 @@ impl Type {
         )
     }
 
-    pub(crate) fn width(&self) -> Width {
+    pub fn width(&self) -> Width {
         use Type::*;
         match self {
             SChar | Char | UChar => Width::W8,
@@ -339,7 +340,7 @@ impl Type {
         }
     }
 
-    pub(crate) fn bit_width(&self) -> usize {
+    pub fn bit_width(&self) -> usize {
         use Type::*;
         match self {
             SChar | Char | UChar => 8,
@@ -352,7 +353,7 @@ impl Type {
         }
     }
 
-    pub(crate) fn byte_size(&self) -> usize {
+    pub fn byte_size(&self) -> usize {
         match self {
             Type::Char | Type::SChar | Type::UChar => 1,
             Type::Short | Type::UShort => 2,
@@ -367,7 +368,7 @@ impl Type {
         }
     }
 
-    pub(crate) fn integer_promotion(&self) -> Type {
+    pub fn integer_promotion(&self) -> Type {
         use Type::*;
         match self {
             Char | UChar => Int,
@@ -376,7 +377,7 @@ impl Type {
         }
     }
 
-    pub(crate) fn working_type(&self, rhs: Type) -> Type {
+    pub fn working_type(&self, rhs: Type) -> Type {
         use Type::*;
 
         let a = self.integer_promotion();
@@ -418,15 +419,15 @@ impl Type {
         }
     }
 
-    pub(crate) fn is_char(&self) -> bool {
+    pub fn is_char(&self) -> bool {
         matches!(self, Type::Char | Type::SChar | Type::UChar)
     }
 
-    pub(crate) fn is_floating(&self) -> bool {
+    pub fn is_floating(&self) -> bool {
         matches!(self, Type::Double)
     }
 
-    pub(crate) fn is_numeric(&self) -> bool {
+    pub fn is_numeric(&self) -> bool {
         self.is_integer() || self.is_floating()
     }
 }

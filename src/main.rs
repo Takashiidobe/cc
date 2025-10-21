@@ -1,11 +1,18 @@
+pub mod cli;
+pub mod codegen;
+pub mod parse;
+pub mod semantic;
+pub mod tacky;
+pub mod tokenize;
+
 use std::fs;
 
 use anyhow::Error;
-use cc::{
-    cli::Args, codegen::Codegen, loop_label::LoopLabeler, parse::Parser,
-    semantic::SemanticAnalyzer, tacky::TackyGen, tokenize::tokenize,
-};
 use clap::Parser as _;
+use {
+    cli::Args, codegen::Codegen, parse::Parser, semantic::SemanticAnalyzer,
+    semantic::loop_label::LoopLabeler, tacky::TackyGen, tokenize::tokenize,
+};
 
 fn main() -> anyhow::Result<(), Error> {
     let args = Args::parse();

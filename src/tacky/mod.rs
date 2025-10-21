@@ -1,240 +1,21 @@
+mod error;
+mod types;
+
 use std::collections::BTreeMap;
 
-use crate::parse::{
-    Const, DeclKind, Expr, ExprKind, ForInit, FunctionDecl, ParameterDecl, Program as AstProgram,
-    Stmt, StmtKind, StorageClass, Type, VariableDecl,
+pub use crate::{
+    parse::{
+        Const, DeclKind, Expr, ExprKind, ForInit, FunctionDecl, ParameterDecl,
+        Program as AstProgram, Stmt, StmtKind, StorageClass, Type, VariableDecl,
+    },
+    tacky::{
+        error::{IRError, IResult},
+        types::{
+            BinaryOp, Function, Instruction, LoopContext, Program, StaticConstant, StaticInit,
+            StaticVariable, TopLevel, UnaryOp, Value,
+        },
+    },
 };
-
-type IResult<T> = Result<T, IRError>;
-
-#[derive(thiserror::Error, Debug, Clone)]
-pub enum IRError {
-    #[error("unexpected state: {0}")]
-    State(&'static str),
-    #[error("loop stack underflow")]
-    LoopUnderflow,
-    #[error("loop id mismatch (expected {0}, got {1})")]
-    LoopIdMismatch(usize, usize),
-    #[error("no loop context for id {0}")]
-    NoLoopContext(usize),
-    #[error("missing loop id in {0}")]
-    MissingLoopId(&'static str),
-    #[error("return outside function context")]
-    ReturnOutsideFunction,
-    #[error("unsupported array initializer for static variable '{0}'")]
-    UnsupportedArrayInit(String),
-    #[error("division by zero in static initializer")]
-    DivByZeroInStaticInit,
-    #[error("non-constant expression in static initializer")]
-    NonConstInitializer,
-    #[error("unknown temporary {0}")]
-    UnknownTemporary(String),
-    #[error("unknown global {0}")]
-    UnknownGlobal(String),
-    #[error("unsupported conversion from {0:?} to {1:?}")]
-    UnsupportedConversion(Type, Type),
-    #[error("value of type {0:?} has no bit width")]
-    NoBitWidth(Type),
-    #[error("type {0:?} has no integer rank")]
-    NoRank(Type),
-    #[error("unsupported operand types {0:?} and {1:?}")]
-    UnsupportedOperands(Type, Type),
-    #[error("mismatched constant for double conversion")]
-    BadDoubleConstant,
-    #[error("cannot convert constant to {0:?}")]
-    BadConstTarget(Type),
-    #[error("cannot convert floating constant to {0}")]
-    BadFloatConstTarget(&'static str),
-    #[error("string literal \"{0}\" does not fit in array of size {1}")]
-    StringTooLarge(String, usize),
-    #[error("static initializer: non-constant double initializer")]
-    NonConstDoubleInit,
-    #[error("assignment target must be assignable")]
-    BadAssignTarget,
-    #[error("unsupported lvalue for address-of")]
-    BadLValueAddressOf,
-    #[error("call to undeclared function {0}")]
-    CallUndeclared(String),
-    #[error("function '{0}' called with wrong number of arguments (expected {1}, got {2})")]
-    WrongArity(String, usize, usize),
-    #[error("pointer addition is not supported")]
-    PointerAddUnsupported,
-    #[error("integer minus pointer is not supported")]
-    IntMinusPtrUnsupported,
-    #[error("invalid pointer element size {0}")]
-    BadPointerElemSize(i64),
-    #[error("expected pointer type, found {0:?}")]
-    ExpectedPointer(Type),
-    #[error("array size exceeds i64")]
-    ArraySizeI64Overflow,
-    #[error("{0}")]
-    Generic(&'static str),
-}
-
-#[derive(Debug, Clone)]
-pub struct Program {
-    pub items: Vec<TopLevel>,
-    pub global_types: BTreeMap<String, Type>,
-}
-
-#[derive(Debug, Clone)]
-pub enum TopLevel {
-    Function(Function),
-    StaticVariable(StaticVariable),
-    StaticConstant(StaticConstant),
-}
-
-#[derive(Debug, Clone)]
-pub struct Function {
-    pub name: String,
-    pub global: bool,
-    pub params: Vec<String>,
-    pub return_type: Type,
-    pub instructions: Vec<Instruction>,
-    pub value_types: BTreeMap<String, Type>,
-}
-
-#[derive(Debug, Clone)]
-pub struct StaticVariable {
-    pub name: String,
-    pub global: bool,
-    pub ty: Type,
-    pub init: Vec<StaticInit>,
-}
-
-#[derive(Debug, Clone)]
-pub struct StaticConstant {
-    pub name: String,
-    pub ty: Type,
-    pub init: StaticInit,
-}
-
-#[derive(Debug, Clone)]
-pub enum StaticInit {
-    Scalar {
-        offset: i64,
-        value: Const,
-    },
-    Bytes {
-        offset: i64,
-        value: Vec<u8>,
-        null_terminated: bool,
-    },
-    Label {
-        offset: i64,
-        symbol: String,
-    },
-}
-
-#[derive(Debug, Clone)]
-pub enum Value {
-    Constant(Const),
-    Var(String),
-    Global(String),
-}
-
-#[derive(Debug, Clone)]
-pub enum Instruction {
-    Return(Value),
-    Unary {
-        op: UnaryOp,
-        src: Value,
-        dst: Value,
-    },
-    Binary {
-        op: BinaryOp,
-        src1: Value,
-        src2: Value,
-        dst: Value,
-    },
-    Copy {
-        src: Value,
-        dst: Value,
-    },
-    FunCall {
-        name: String,
-        args: Vec<Value>,
-        dst: Value,
-    },
-    Jump(String),
-    JumpIfZero {
-        condition: Value,
-        target: String,
-    },
-    JumpIfNotZero {
-        condition: Value,
-        target: String,
-    },
-    Label(String),
-    SignExtend {
-        src: Value,
-        dst: Value,
-    },
-    ZeroExtend {
-        src: Value,
-        dst: Value,
-    },
-    Truncate {
-        src: Value,
-        dst: Value,
-    },
-    Convert {
-        src: Value,
-        dst: Value,
-        from: Type,
-        to: Type,
-    },
-    GetAddress {
-        src: Value,
-        dst: Value,
-    },
-    Load {
-        src_ptr: Value,
-        dst: Value,
-    },
-    Store {
-        src: Value,
-        dst_ptr: Value,
-    },
-    AddPtr {
-        ptr: Value,
-        index: Value,
-        scale: i64,
-        dst: Value,
-    },
-    CopyToOffset {
-        src: Value,
-        dst: String,
-        offset: i64,
-    },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum UnaryOp {
-    Negate,
-    Complement,
-    Not,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BinaryOp {
-    Add,
-    Subtract,
-    Multiply,
-    Divide,
-    Remainder,
-    Equal,
-    NotEqual,
-    LessThan,
-    LessOrEqual,
-    GreaterThan,
-    GreaterOrEqual,
-    BitAnd,
-    BitOr,
-    BitXor,
-    LeftShift,
-    RightShift,
-}
 
 pub struct TackyGen {
     tmp_counter: usize,
@@ -248,12 +29,6 @@ pub struct TackyGen {
     function_signatures: BTreeMap<String, (Vec<Type>, Type)>,
     string_literals: Vec<StaticConstant>,
     string_counter: usize,
-}
-
-struct LoopContext {
-    id: usize,
-    break_label: String,
-    continue_label: String,
 }
 
 impl TackyGen {

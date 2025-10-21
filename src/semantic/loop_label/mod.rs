@@ -1,19 +1,14 @@
-use thiserror::Error;
+mod error;
 
-use crate::parse::{Decl, DeclKind, FunctionDecl, Program, Stmt, StmtKind};
+use crate::{
+    parse::{Decl, DeclKind, FunctionDecl, Program, Stmt, StmtKind},
+    semantic::loop_label::error::LoopLabelerError,
+};
 
 #[derive(Default)]
 pub struct LoopLabeler {
     next_loop_id: usize,
     loop_stack: Vec<usize>,
-}
-
-#[derive(Debug, Error)]
-pub enum LoopLabelerError {
-    #[error("Break not in loop")]
-    BreakNotInLoop,
-    #[error("Continue not in loop")]
-    ContinueNotInLoop,
 }
 
 impl LoopLabeler {

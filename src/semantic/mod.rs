@@ -1,4 +1,5 @@
 #![allow(clippy::result_large_err)]
+pub mod loop_label;
 
 use std::collections::BTreeMap;
 
@@ -85,13 +86,13 @@ pub enum SemanticError {
 }
 
 #[derive(Clone)]
-struct Symbol {
+pub struct Symbol {
     unique: String,
     ty: Type,
 }
 
 #[derive(Clone)]
-struct FunctionSignature {
+pub struct FunctionSignature {
     return_type: Type,
     param_types: Vec<Type>,
 }
