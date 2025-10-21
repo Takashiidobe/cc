@@ -228,11 +228,21 @@ pub enum ForInit {
     Expr(Option<Expr>),
 }
 
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Width {
+    W8,
+    W16,
+    W32,
+    W64,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Type {
     Char,
     SChar,
     UChar,
+    Short,
+    UShort,
     Int,
     Long,
     UInt,
@@ -250,6 +260,8 @@ impl fmt::Display for Type {
         match self {
             Type::Char | Type::SChar => f.write_str("char"),
             Type::UChar => f.write_str("unsigned char"),
+            Type::Short => f.write_str("short"),
+            Type::UShort => f.write_str("unsigned short"),
             Type::Int => f.write_str("int"),
             Type::Long => f.write_str("long"),
             Type::UInt => f.write_str("unsigned int"),
@@ -263,14 +275,35 @@ impl fmt::Display for Type {
         }
     }
 }
-
 impl Type {
+    pub(crate) fn type_rank(&self) -> usize {
+        match self {
+            Type::Char | Type::SChar => 0,
+            Type::UChar => 1,
+            Type::Short => 2,
+            Type::UShort => 3,
+            Type::Int => 4,
+            Type::UInt => 5,
+            Type::Long => 6,
+            Type::ULong => 7,
+            Type::Void
+            | Type::Double
+            | Type::Pointer(_)
+            | Type::FunType(_, _)
+            | Type::Array(_, _)
+            | Type::IncompleteArray(_) => panic!("Cannot be compared"),
+        }
+    }
     pub(crate) fn is_void(&self) -> bool {
         matches!(self, Type::Void)
     }
 
     pub(crate) fn is_unsigned(&self) -> bool {
         matches!(self, Type::UChar | Type::UInt | Type::ULong)
+    }
+
+    pub(crate) fn is_signed(&self) -> bool {
+        self.is_integer() && !self.is_unsigned()
     }
 
     pub(crate) fn is_pointer(&self) -> bool {
@@ -283,11 +316,106 @@ impl Type {
             Type::Char
                 | Type::SChar
                 | Type::UChar
+                | Type::Short
+                | Type::UShort
                 | Type::Int
                 | Type::UInt
                 | Type::Long
                 | Type::ULong
         )
+    }
+
+    pub(crate) fn width(&self) -> Width {
+        use Type::*;
+        match self {
+            SChar | Char | UChar => Width::W8,
+            Short | UShort => Width::W16,
+            Int | UInt => Width::W32,
+            Long | ULong => Width::W64,
+            Double => todo!(),
+            Void | Pointer(_) | Array(_, _) | IncompleteArray(_) | FunType(_, _) => {
+                todo!("invalid type size")
+            }
+        }
+    }
+
+    pub(crate) fn bit_width(&self) -> usize {
+        use Type::*;
+        match self {
+            SChar | Char | UChar => 8,
+            Short | UShort => 16,
+            Int | UInt => 32,
+            Long | ULong | Double => 64,
+            Void | Pointer(_) | Array(_, _) | IncompleteArray(_) | FunType(_, _) => {
+                todo!("invalid type size")
+            }
+        }
+    }
+
+    pub(crate) fn byte_size(&self) -> usize {
+        match self {
+            Type::Char | Type::SChar | Type::UChar => 1,
+            Type::Short | Type::UShort => 2,
+            Type::Int | Type::UInt => 4,
+            Type::Long | Type::ULong => 8,
+            Type::Double => 8,
+            Type::Pointer(_) => 8,
+            Type::Array(inner, len) => len * inner.byte_size(),
+            Type::IncompleteArray(_) | Type::Void | Type::FunType(_, _) => {
+                panic!("No size");
+            }
+        }
+    }
+
+    pub(crate) fn integer_promotion(&self) -> Type {
+        use Type::*;
+        match self {
+            Char | UChar => Int,
+            t if t.is_integer() => self.clone(),
+            _ => panic!("Invalid integer promotion type"),
+        }
+    }
+
+    pub(crate) fn working_type(&self, rhs: Type) -> Type {
+        use Type::*;
+
+        let a = self.integer_promotion();
+        let b = rhs.integer_promotion();
+        if a == b {
+            return a;
+        }
+
+        let wa = a.width();
+        let wb = b.width();
+        let sa = a.is_signed();
+        let sb = b.is_signed();
+
+        let rank = |w: Width| match w {
+            Width::W8 => 1,
+            Width::W16 => 2,
+            Width::W32 => 3,
+            Width::W64 => 4,
+        };
+
+        if rank(wa) != rank(wb) {
+            return match (wa, sa, wb, sb) {
+                (Width::W64, true, _, _) => Long,
+                (Width::W64, false, _, _) => ULong,
+                (_, _, Width::W64, true) => Long,
+                (_, _, Width::W64, false) => ULong,
+                (Width::W32, true, Width::W16 | Width::W8, _) => Int,
+                (Width::W32, false, Width::W16 | Width::W8, _) => UInt,
+                (Width::W16 | Width::W8, _, Width::W32, true) => Int,
+                (Width::W16 | Width::W8, _, Width::W32, false) => UInt,
+                _ => unreachable!(),
+            };
+        }
+
+        match (wa, sa, sb) {
+            (Width::W64, false, _) | (Width::W64, _, false) => ULong,
+            (Width::W32, false, _) | (Width::W32, _, false) => UInt,
+            _ => Long,
+        }
     }
 
     pub(crate) fn is_char(&self) -> bool {
@@ -307,6 +435,8 @@ impl Type {
 pub enum Const {
     Char(i8),
     UChar(u8),
+    Short(i16),
+    UShort(u16),
     Int(i32),
     UInt(u32),
     Long(i64),

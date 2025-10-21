@@ -513,6 +513,8 @@ impl SemanticAnalyzer {
             ExprKind::Constant(c) => {
                 let ty = match &c {
                     Const::Char(_) => Type::Int,
+                    Const::Short(_) => Type::Short,
+                    Const::UShort(_) => Type::UShort,
                     Const::UChar(_) => Type::UInt,
                     Const::Int(_) => Type::Int,
                     Const::Long(_) => Type::Long,
@@ -1139,8 +1141,8 @@ impl SemanticAnalyzer {
             return Ok(Type::Double);
         }
 
-        let lr = self.type_rank(lhs)?;
-        let rr = self.type_rank(rhs)?;
+        let lr = lhs.type_rank();
+        let rr = rhs.type_rank();
         Ok(if lr >= rr { lhs.clone() } else { rhs.clone() })
     }
 
@@ -1222,24 +1224,6 @@ impl SemanticAnalyzer {
         }
 
         Err(SemanticError::CastToError(from_type, to_type))
-    }
-
-    fn type_rank(&self, ty: &Type) -> Result<usize, SemanticError> {
-        let r = match ty {
-            Type::Char | Type::SChar => 0,
-            Type::UChar => 1,
-            Type::Int => 2,
-            Type::UInt => 3,
-            Type::Long => 4,
-            Type::ULong => 5,
-            Type::Void
-            | Type::Double
-            | Type::Pointer(_)
-            | Type::FunType(_, _)
-            | Type::Array(_, _)
-            | Type::IncompleteArray(_) => return Err(SemanticError::NoIntegerRank(ty.clone())),
-        };
-        Ok(r)
     }
 
     fn pointer_types_compatible(lhs: &Type, rhs: &Type) -> bool {

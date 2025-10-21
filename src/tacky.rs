@@ -1,5 +1,4 @@
 use std::collections::BTreeMap;
-use std::convert::TryFrom;
 
 use crate::parse::{
     Const, DeclKind, Expr, ExprKind, ForInit, FunctionDecl, ParameterDecl, Program as AstProgram,
@@ -575,8 +574,8 @@ impl TackyGen {
         let dst = Value::Var(tmp);
 
         if from_type.is_integer() && to_type.is_integer() {
-            let from_bits = Self::bit_width(&from_type).unwrap_or(32);
-            let to_bits = Self::bit_width(&to_type).unwrap_or(32);
+            let from_bits = &from_type.bit_width();
+            let to_bits = &to_type.bit_width();
             if from_bits == to_bits {
                 instructions.push(Instruction::Copy {
                     src: value,
@@ -630,6 +629,8 @@ impl TackyGen {
         Ok(match value {
             Value::Constant(Const::Char(_)) => Type::Int,
             Value::Constant(Const::UChar(_)) => Type::UInt,
+            Value::Constant(Const::Short(_)) => Type::Short,
+            Value::Constant(Const::UShort(_)) => Type::UShort,
             Value::Constant(Const::Int(_)) => Type::Int,
             Value::Constant(Const::Long(_)) => Type::Long,
             Value::Constant(Const::UInt(_)) => Type::UInt,
@@ -659,36 +660,6 @@ impl TackyGen {
         self.locals.contains_key(name)
     }
 
-    fn bit_width(ty: &Type) -> IResult<u32> {
-        Ok(match ty {
-            Type::Char | Type::SChar | Type::UChar => 8,
-            Type::Int | Type::UInt => 32,
-            Type::Long | Type::ULong => 64,
-            Type::Double => 64,
-            Type::Pointer(_) => 64,
-            Type::Void | Type::FunType(_, _) | Type::Array(_, _) | Type::IncompleteArray(_) => {
-                return Err(IRError::NoBitWidth(ty.clone()));
-            }
-        })
-    }
-
-    fn type_rank(ty: &Type) -> IResult<usize> {
-        Ok(match ty {
-            Type::Char | Type::SChar => 0,
-            Type::UChar => 1,
-            Type::Int => 2,
-            Type::UInt => 3,
-            Type::Long => 4,
-            Type::ULong => 5,
-            Type::Void
-            | Type::Double
-            | Type::Pointer(_)
-            | Type::FunType(_, _)
-            | Type::Array(_, _)
-            | Type::IncompleteArray(_) => return Err(IRError::NoRank(ty.clone())),
-        })
-    }
-
     fn common_numeric_type(lhs: &Type, rhs: &Type) -> IResult<Type> {
         if lhs.is_floating() || rhs.is_floating() {
             return Ok(Type::Double);
@@ -696,8 +667,8 @@ impl TackyGen {
         if !lhs.is_integer() || !rhs.is_integer() {
             return Err(IRError::UnsupportedOperands(lhs.clone(), rhs.clone()));
         }
-        let lr = Self::type_rank(lhs)?;
-        let rr = Self::type_rank(rhs)?;
+        let lr = lhs.type_rank();
+        let rr = rhs.type_rank();
         Ok(if lr >= rr { lhs.clone() } else { rhs.clone() })
     }
 
@@ -721,6 +692,8 @@ impl TackyGen {
                 (Const::Double(v), _) => v,
                 (Const::Char(n), _) => n as f64,
                 (Const::UChar(n), _) => n as f64,
+                (Const::Short(n), _) => n as f64,
+                (Const::UShort(n), _) => n as f64,
                 (Const::Int(n), _) => f64::from(n),
                 (Const::Long(n), _) => n as f64,
                 (Const::UInt(n), _) => n as f64,
@@ -737,6 +710,8 @@ impl TackyGen {
             return Ok(match to_type {
                 Type::Char | Type::SChar => Const::Char(value as i8),
                 Type::UChar => Const::UChar(value as u8),
+                Type::Short => Const::Short(value as i16),
+                Type::UShort => Const::UShort(value as u16),
                 Type::Int => Const::Int(value as i32),
                 Type::Long => Const::Long(value as i64),
                 Type::UInt => Const::UInt(value as u32),
@@ -752,32 +727,36 @@ impl TackyGen {
             });
         }
 
-        let from_bits = Self::bit_width(from_type)?;
-        let to_bits = Self::bit_width(to_type)?;
+        let from_bits = from_type.bit_width();
+        let to_bits = to_type.bit_width();
         let from_unsigned = from_type.is_unsigned();
 
         let mut raw = match constant {
-            Const::Char(n) => (n as i32 as u32) as u128,
-            Const::UChar(n) => (n as u32) as u128,
-            Const::Int(n) => (n as u32) as u128,
+            Const::Char(n) => n as u128,
+            Const::UChar(n) => n as u128,
+            Const::Short(n) => n as u128,
+            Const::UShort(n) => n as u128,
+            Const::Int(n) => n as u128,
             Const::UInt(n) => n as u128,
-            Const::Long(n) => (n as u64) as u128,
+            Const::Long(n) => n as u128,
             Const::ULong(n) => n as u128,
             Const::Double(_) => unreachable!("handled above"),
         };
 
-        raw &= Self::mask(from_bits);
+        raw &= Self::mask(from_bits as u32);
         if to_bits > from_bits && !from_unsigned {
             let sign_bit = 1u128 << (from_bits - 1);
             if raw & sign_bit != 0 {
                 raw |= (!0u128) << from_bits;
             }
         }
-        raw &= Self::mask(to_bits);
+        raw &= Self::mask(to_bits as u32);
 
         Ok(match to_type {
             Type::Char | Type::SChar => Const::Char(raw as i8),
             Type::UChar => Const::UChar(raw as u8),
+            Type::Short => Const::Short(raw as i16),
+            Type::UShort => Const::UShort(raw as u16),
             Type::Int => Const::Int(raw as i32),
             Type::UInt => Const::UInt(raw as u32),
             Type::Long => Const::Long(raw as i64),
@@ -1015,9 +994,9 @@ impl TackyGen {
                                 {
                                     if let ExprKind::String(value) = &init_expr.kind {
                                         let (bytes, _) = Self::char_array_bytes(value, *size)?;
-                                        let elem_size = Self::size_of_type(elem.as_ref())?;
+                                        let elem_size = elem.as_ref().byte_size();
                                         for (idx, byte) in bytes.iter().enumerate() {
-                                            let offset = elem_size * idx as i64;
+                                            let offset = (elem_size * idx) as i64;
                                             let const_value = match elem.as_ref() {
                                                 Type::Char | Type::SChar => {
                                                     Const::Char(*byte as i8)
@@ -1514,10 +1493,7 @@ impl TackyGen {
         }
 
         let base_type = self.pointer_base_type(&ptr_expr.r#type)?;
-        let scale = Self::size_of_type(base_type)?;
-        if scale <= 0 {
-            return Err(IRError::BadPointerElemSize(scale));
-        }
+        let scale = base_type.byte_size();
 
         let dst_name = self.fresh_tmp();
         self.record_temp(&dst_name, result_type);
@@ -1525,7 +1501,7 @@ impl TackyGen {
         instructions.push(Instruction::AddPtr {
             ptr,
             index,
-            scale,
+            scale: scale as i64,
             dst: dst.clone(),
         });
         Ok(dst)
@@ -1554,13 +1530,10 @@ impl TackyGen {
         });
 
         let base_type = self.pointer_base_type(&lhs.r#type)?;
-        let scale = Self::size_of_type(base_type)?;
-        if scale <= 0 {
-            return Err(IRError::BadPointerElemSize(scale));
-        }
+        let scale = base_type.byte_size();
 
         let quotient = if scale != 1 {
-            let scale_const = Value::Constant(Const::Long(scale));
+            let scale_const = Value::Constant(Const::Long(scale as i64));
             let quot_tmp_name = self.fresh_tmp();
             self.record_temp(&quot_tmp_name, &Type::Long);
             let quot_value = Value::Var(quot_tmp_name.clone());
@@ -1583,25 +1556,6 @@ impl TackyGen {
             Type::Pointer(inner) => Ok(inner.as_ref()),
             other => Err(IRError::ExpectedPointer(other.clone())),
         }
-    }
-
-    fn size_of_type(ty: &Type) -> IResult<i64> {
-        Ok(match ty {
-            Type::Char | Type::SChar | Type::UChar => 1,
-            Type::Int | Type::UInt => 4,
-            Type::Long | Type::ULong => 8,
-            Type::Double => 8,
-            Type::Pointer(_) => 8,
-            Type::Array(inner, len) => {
-                let len_i64 = i64::try_from(*len).map_err(|_| IRError::ArraySizeI64Overflow)?;
-                len_i64 * Self::size_of_type(inner)?
-            }
-            Type::IncompleteArray(_) => {
-                return Err(IRError::Generic("incomplete array type has no size"));
-            }
-            Type::Void => return Err(IRError::Generic("void type has no size")),
-            Type::FunType(_, _) => return Err(IRError::Generic("function type has no size")),
-        })
     }
 
     fn gen_pointer_equality(
@@ -1770,6 +1724,11 @@ impl TackyGen {
                     "increment/decrement for char types not yet supported",
                 ));
             }
+            Type::Short | Type::UShort => {
+                return Err(IRError::Generic(
+                    "increment/decrement for short types not yet supported",
+                ));
+            }
             Type::Double => instructions.push(Instruction::Binary {
                 op,
                 src1: target.clone(),
@@ -1777,10 +1736,7 @@ impl TackyGen {
                 dst: updated_tmp.clone(),
             }),
             Type::Pointer(inner) => {
-                let scale = Self::size_of_type(inner)?;
-                if scale <= 0 {
-                    return Err(IRError::BadPointerElemSize(scale));
-                }
+                let scale = inner.byte_size();
                 let step = match op {
                     BinaryOp::Add => Const::Long(1),
                     BinaryOp::Subtract => Const::Long(-1),
@@ -1793,7 +1749,7 @@ impl TackyGen {
                 instructions.push(Instruction::AddPtr {
                     ptr: target.clone(),
                     index: Value::Constant(step),
-                    scale,
+                    scale: scale as i64,
                     dst: updated_tmp.clone(),
                 });
             }

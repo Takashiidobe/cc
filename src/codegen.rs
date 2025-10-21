@@ -1,9 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::convert::TryFrom;
 use std::fmt::{self, Write as FmtWrite};
 use std::io::Write;
 
-use crate::parse::{Const, Type};
+use crate::parse::{Const, Type, Width};
 use crate::tacky::{
     BinaryOp, Function, Instruction, Program as TackyProgram, StaticConstant, StaticInit,
     StaticVariable, TopLevel, UnaryOp, Value,
@@ -95,39 +94,6 @@ pub enum CodegenError {
 }
 
 type Result<T = ()> = std::result::Result<T, CodegenError>;
-
-impl Type {
-    fn type_size(&self) -> Result<i64> {
-        let sz = match self {
-            Type::Void => 0,
-            Type::Char | Type::SChar | Type::UChar => 1,
-            Type::Int | Type::UInt => 4,
-            Type::Long | Type::ULong | Type::Double | Type::Pointer(_) => 8,
-            Type::FunType(_, _) | Type::IncompleteArray(_) => {
-                return Err(CodegenError::TypeHasNoSize(self.clone()));
-            }
-            Type::Array(inner, len) => {
-                let len_i64 = i64::try_from(*len)
-                    .map_err(|_| CodegenError::ArraySizeTooLarge((*len) as u128))?;
-                len_i64 * inner.type_size()?
-            }
-        };
-        Ok(sz)
-    }
-
-    fn type_align(&self) -> Result<i64> {
-        let a = match self {
-            Type::Char | Type::SChar | Type::UChar | Type::Void => 1,
-            Type::Int | Type::UInt => 4,
-            Type::Long | Type::ULong | Type::Double | Type::Pointer(_) => 8,
-            Type::FunType(_, _) | Type::IncompleteArray(_) => {
-                return Err(CodegenError::TypeHasNoAlignment(self.clone()));
-            }
-            Type::Array(inner, _) => inner.type_align()?,
-        };
-        Ok(a)
-    }
-}
 
 pub struct Codegen<W: Write> {
     pub buf: W,
@@ -244,10 +210,10 @@ impl<W: Write> Codegen<W> {
         if var.global {
             writeln!(self.buf, ".globl {}", var.name)?;
         }
-        let align = var.ty.type_align()?;
+        let align = var.ty.byte_size();
         writeln!(self.buf, ".align {}", align)?;
         writeln!(self.buf, "{}:", var.name)?;
-        let size = var.ty.type_size()?;
+        let size = var.ty.byte_size();
         match init_entry {
             None => writeln!(self.buf, "  .zero {}", size)?,
             Some(init) => self.emit_static_init_for_type(&var.ty, init)?,
@@ -327,6 +293,8 @@ impl<W: Write> Codegen<W> {
         match value {
             Const::Char(v) => *v == 0,
             Const::Int(v) => *v == 0,
+            Const::Short(v) => *v == 0,
+            Const::UShort(v) => *v == 0,
             Const::Long(v) => *v == 0,
             Const::UChar(v) => *v == 0,
             Const::UInt(v) => *v == 0,
@@ -386,7 +354,7 @@ impl<W: Write> Codegen<W> {
 
     fn emit_static_constant(&mut self, constant: &StaticConstant) -> Result<()> {
         writeln!(self.buf, ".data")?;
-        let align = constant.ty.type_align()?;
+        let align = constant.ty.byte_size();
         writeln!(self.buf, ".align {}", align)?;
         writeln!(self.buf, "{}:", constant.name)?;
         self.emit_static_init_for_type(&constant.ty, &constant.init)
@@ -411,6 +379,9 @@ impl<W: Write> Codegen<W> {
         let ty = &function.return_type;
         match ty {
             Type::Char | Type::SChar | Type::UChar => {
+                return Err(CodegenError::UnsupportedFunctionReturnType(ty.clone()));
+            }
+            Type::Short | Type::UShort => {
                 return Err(CodegenError::UnsupportedFunctionReturnType(ty.clone()));
             }
             Type::Int | Type::UInt => writeln!(
@@ -517,8 +488,8 @@ impl<W: Write> Codegen<W> {
                     self.value_types
                 ))
             })?;
-            let size = ty.type_size()?;
-            let align = ty.type_align()?;
+            let size = ty.byte_size() as i64;
+            let align = ty.byte_size() as i64;
             if offset % align != 0 {
                 offset += align - (offset % align);
             }
@@ -881,7 +852,20 @@ impl<W: Write> Codegen<W> {
                 self.load_value_into_reg(src2, Reg::R10)?;
                 match ty {
                     Type::Char | Type::SChar | Type::UChar => {
-                        return Err(CodegenError::DivisionUnsupportedForType(ty));
+                        writeln!(self.buf, "  cbtw")?;
+                        writeln!(
+                            self.buf,
+                            "  idiv {}",
+                            Reg::R10.reg_name_for_type(&Type::Char)?
+                        )?;
+                    }
+                    Type::Short | Type::UShort => {
+                        writeln!(self.buf, "  cbtb")?;
+                        writeln!(
+                            self.buf,
+                            "  idiv {}",
+                            Reg::R10.reg_name_for_type(&Type::Short)?
+                        )?;
                     }
                     Type::Int => {
                         writeln!(self.buf, "  cltd")?;
@@ -1107,6 +1091,10 @@ impl<W: Write> Codegen<W> {
                 self.load_value_into_reg(src, Reg::R11)?;
                 writeln!(self.buf, "  movb {}, {}", Reg::R11.reg_name8(), addr)?;
             }
+            Type::Short | Type::UShort => {
+                self.load_value_into_reg(src, Reg::R11)?;
+                writeln!(self.buf, "  movw {}, {}", Reg::R11.reg_name16(), addr)?;
+            }
             Type::Int | Type::UInt => {
                 self.load_value_into_reg(src, Reg::R11)?;
                 writeln!(self.buf, "  movl {}, {}", Reg::R11.reg_name32(), addr)?;
@@ -1249,17 +1237,7 @@ impl<W: Write> Codegen<W> {
                 )?;
                 self.store_xmm_into_value(0, dst)
             }
-            (Type::UInt, Type::Double) => {
-                self.load_value_into_reg(src, Reg::R11)?;
-                writeln!(
-                    self.buf,
-                    "  cvtsi2sdq {}, {}",
-                    Reg::R11.reg_name64(),
-                    Self::xmm_name(0)?
-                )?;
-                self.store_xmm_into_value(0, dst)
-            }
-            (Type::Long, Type::Double) => {
+            (Type::UInt, Type::Double) | (Type::Long, Type::Double) => {
                 self.load_value_into_reg(src, Reg::R11)?;
                 writeln!(
                     self.buf,
@@ -1422,6 +1400,14 @@ impl<W: Write> Codegen<W> {
                 };
                 writeln!(self.buf, "  movb ${}, {}", imm, reg.reg_name_for_type(&ty)?)?;
             }
+            Value::Constant(c @ Const::Short(_) | c @ Const::UShort(_)) => {
+                let (imm, ty) = match c {
+                    Const::Short(n) => (*n as u16, Type::Short),
+                    Const::UShort(n) => (*n, Type::UShort),
+                    _ => unreachable!(),
+                };
+                writeln!(self.buf, "  movw ${}, {}", imm, reg.reg_name_for_type(&ty)?)?;
+            }
             Value::Constant(Const::Int(n)) => {
                 writeln!(
                     self.buf,
@@ -1565,6 +1551,7 @@ impl<W: Write> Codegen<W> {
     fn mov_instr(&self, ty: &Type) -> Result<&'static str> {
         match ty {
             Type::Char | Type::SChar | Type::UChar => Ok("movb"),
+            Type::Short | Type::UShort => Ok("movw"),
             Type::Int | Type::UInt => Ok("movl"),
             Type::Long | Type::ULong | Type::Void | Type::Pointer(_) => Ok("movq"),
             Type::Double => Err(CodegenError::MovUnsupported(ty.clone())),
@@ -1583,21 +1570,152 @@ impl<W: Write> Codegen<W> {
         match value {
             Value::Constant(Const::Char(_)) => Some(Type::Char),
             Value::Constant(Const::UChar(_)) => Some(Type::UChar),
+            Value::Constant(Const::Short(_)) => Some(Type::Short),
+            Value::Constant(Const::UShort(_)) => Some(Type::UShort),
             Value::Constant(Const::Int(_)) => Some(Type::Int),
-            Value::Constant(Const::Long(_)) => Some(Type::Long),
             Value::Constant(Const::UInt(_)) => Some(Type::UInt),
+            Value::Constant(Const::Long(_)) => Some(Type::Long),
             Value::Constant(Const::ULong(_)) => Some(Type::ULong),
             Value::Constant(Const::Double(_)) => Some(Type::Double),
             Value::Var(name) => self.value_types.get(name).cloned(),
             Value::Global(name) => self.global_types.get(name).cloned(),
         }
     }
+
+    fn emit_widen(
+        &mut self,
+        src: Reg,
+        src_ty: Type,
+        dst: Reg,
+        dst_ty: Type,
+    ) -> std::io::Result<()> {
+        use Ext::*;
+        use Width::*;
+
+        let sw = src_ty.width();
+        let dw = dst_ty.width();
+
+        let name = |r: Reg, t: Type| -> String { r.reg_name_for_type(&t).unwrap().to_string() };
+
+        if sw == dw {
+            let suf = match dw {
+                W8 => 'b',
+                W16 => 'w',
+                W32 => 'l',
+                W64 => 'q',
+            };
+            return writeln!(
+                self.buf,
+                "  mov{} {}, {}",
+                suf,
+                name(src, dst_ty.clone()),
+                name(dst, dst_ty)
+            );
+        }
+
+        let ext = match (sw, dw) {
+            (W8, W16 | W32 | W64) | (W16, W32 | W64) | (W32, W64) => {
+                if src_ty.is_signed() {
+                    Sign
+                } else {
+                    Zero
+                }
+            }
+            _ => panic!(),
+        };
+
+        match (sw, dw, ext) {
+            (W8, W16, Zero) => writeln!(
+                self.buf,
+                "  movzbw {}, {}",
+                name(src, Type::UChar),
+                name(dst, Type::UShort)
+            ),
+            (W8, W32, Zero) => writeln!(
+                self.buf,
+                "  movzbl {}, {}",
+                name(src, Type::UChar),
+                name(dst, Type::UInt)
+            ),
+            (W8, W64, Zero) => writeln!(
+                self.buf,
+                "  movzbq {}, {}",
+                name(src, Type::UChar),
+                name(dst, Type::ULong)
+            ),
+            (W16, W32, Zero) => writeln!(
+                self.buf,
+                "  movzwl {}, {}",
+                name(src, Type::UShort),
+                name(dst, Type::UInt)
+            ),
+            (W16, W64, Zero) => writeln!(
+                self.buf,
+                "  movzwq {}, {}",
+                name(src, Type::UShort),
+                name(dst, Type::ULong)
+            ),
+            (W32, W64, Zero) => writeln!(
+                self.buf,
+                "  movl {}, {}",
+                src.reg_name32(),
+                dst.reg_name32()
+            ),
+
+            // Sign-extend
+            (W8, W16, Ext::Sign) => writeln!(
+                self.buf,
+                "  movsbw {}, {}",
+                name(src, Type::Char),
+                name(dst, Type::Short)
+            ),
+            (W8, W32, Ext::Sign) => writeln!(
+                self.buf,
+                "  movsbl {}, {}",
+                name(src, Type::Char),
+                name(dst, Type::Int)
+            ),
+            (W8, W64, Ext::Sign) => writeln!(
+                self.buf,
+                "  movsbq {}, {}",
+                name(src, Type::Char),
+                name(dst, Type::Long)
+            ),
+            (W16, W32, Ext::Sign) => writeln!(
+                self.buf,
+                "  movswl {}, {}",
+                name(src, Type::Short),
+                name(dst, Type::Int)
+            ),
+            (W16, W64, Ext::Sign) => writeln!(
+                self.buf,
+                "  movswq {}, {}",
+                name(src, Type::Short),
+                name(dst, Type::Long)
+            ),
+            (W32, W64, Ext::Sign) => writeln!(
+                self.buf,
+                "  movslq {}, {}",
+                src.reg_name32(),
+                dst.reg_name64()
+            ),
+            _ => panic!(),
+        }
+    }
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum Ext {
+    Unknown,
+    Zero,
+    Sign,
 }
 
 impl Reg {
     fn reg_name_for_type(&self, ty: &Type) -> Result<&'static str> {
         match ty {
             Type::Char | Type::SChar | Type::UChar => Ok(self.reg_name8()),
+            Type::Short | Type::UShort => Ok(self.reg_name16()),
             Type::Int | Type::UInt => Ok(self.reg_name32()),
             Type::Long | Type::ULong | Type::Void | Type::Pointer(_) => Ok(self.reg_name64()),
             Type::Double | Type::FunType(_, _) | Type::Array(_, _) | Type::IncompleteArray(_) => {
