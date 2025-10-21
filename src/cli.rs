@@ -11,9 +11,11 @@ pub(crate) struct Args {
     pub(crate) parse: bool,
     #[arg(long, short, group = "flag")]
     pub(crate) lex: bool,
+    #[arg(long, short, group = "flag")]
+    pub(crate) fuzz: bool,
 
-    #[arg(value_parser = path_exists)]
-    pub(crate) input_path: PathBuf,
+    #[arg(value_parser = path_exists, required_unless_present = "fuzz")]
+    pub(crate) input_path: Option<PathBuf>,
 
     #[clap(env, long, short)]
     pub(crate) verbose: bool,

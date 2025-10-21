@@ -8,8 +8,10 @@ pub(crate) mod tokenize;
 
 use std::fs;
 
+use crate::fuzzing::generate;
 use anyhow::Error;
 use clap::Parser as _;
+
 use {
     cli::Args, codegen::Codegen, parse::Parser, semantic::SemanticAnalyzer,
     semantic::loop_label::LoopLabeler, tacky::TackyGen, tokenize::tokenize,
@@ -18,8 +20,15 @@ use {
 fn main() -> anyhow::Result<(), Error> {
     let args = Args::parse();
 
+    if args.fuzz {
+        println!("{}", generate());
+        return Ok(());
+    }
+
+    let input_path = args.input_path.unwrap();
+
     if args.lex {
-        let source = fs::read_to_string(&args.input_path)?;
+        let source = fs::read_to_string(&input_path)?;
         if args.verbose {
             eprintln!("{:?}", &source);
         }
@@ -27,7 +36,7 @@ fn main() -> anyhow::Result<(), Error> {
         eprintln!("{:?}", tokens);
     }
     if args.parse {
-        let source = fs::read_to_string(&args.input_path)?;
+        let source = fs::read_to_string(&input_path)?;
         if args.verbose {
             eprintln!("{:?}", &source);
         }
@@ -40,7 +49,7 @@ fn main() -> anyhow::Result<(), Error> {
         eprintln!("{:?}", ast);
     }
     if args.codegen {
-        let source = fs::read_to_string(&args.input_path)?;
+        let source = fs::read_to_string(&input_path)?;
         if args.verbose {
             eprintln!("source: {:?}", &source);
         }
