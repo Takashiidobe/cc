@@ -4,7 +4,7 @@ pub(crate) mod reg;
 use crate::codegen::error::{CodegenError, Result};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as FmtWrite;
-use std::io::{self, Write};
+use std::io::Write;
 
 use crate::codegen::reg::{ARGUMENT_REGISTERS, Ext, FloatReg, Reg};
 use crate::parse::{Const, Type, Width};
@@ -66,7 +66,7 @@ impl<W: Write> Codegen<W> {
         if var.global {
             writeln!(self.buf, ".globl {}", var.name)?;
         }
-        let align = var.ty.byte_size();
+        let align = var.ty.byte_align();
         writeln!(self.buf, ".align {}", align)?;
         writeln!(self.buf, "{}:", var.name)?;
         let size = var.ty.byte_size();
@@ -210,7 +210,7 @@ impl<W: Write> Codegen<W> {
 
     fn emit_static_constant(&mut self, constant: &StaticConstant) -> Result<()> {
         writeln!(self.buf, ".data")?;
-        let align = constant.ty.byte_size();
+        let align = constant.ty.byte_align();
         writeln!(self.buf, ".align {}", align)?;
         writeln!(self.buf, "{}:", constant.name)?;
         self.emit_static_init_for_type(&constant.ty, &constant.init)
@@ -344,8 +344,9 @@ impl<W: Write> Codegen<W> {
                     self.value_types
                 ))
             })?;
+            dbg!(&name, &ty);
             let size = ty.byte_size() as i64;
-            let align = ty.byte_size() as i64;
+            let align = ty.byte_align() as i64;
             if offset % align != 0 {
                 offset += align - (offset % align);
             }
@@ -1438,7 +1439,7 @@ impl<W: Write> Codegen<W> {
         }
     }
 
-    fn emit_widen(&mut self, src: Reg, src_ty: Type, dst: Reg, dst_ty: Type) -> io::Result<()> {
+    fn emit_widen(&mut self, src: Reg, src_ty: Type, dst: Reg, dst_ty: Type) -> Result<()> {
         use Ext::*;
         use Width::*;
 
@@ -1454,13 +1455,13 @@ impl<W: Write> Codegen<W> {
                 W32 => 'l',
                 W64 => 'q',
             };
-            return writeln!(
+            return Ok(writeln!(
                 self.buf,
                 "  mov{} {}, {}",
                 suf,
                 name(src, dst_ty.clone()),
                 name(dst, dst_ty)
-            );
+            )?);
         }
 
         let ext = match (sw, dw) {
@@ -1475,81 +1476,299 @@ impl<W: Write> Codegen<W> {
         };
 
         match (sw, dw, ext) {
-            (W8, W16, Zero) => writeln!(
+            (W8, W16, Zero) => Ok(writeln!(
                 self.buf,
                 "  movzbw {}, {}",
                 name(src, Type::UChar),
                 name(dst, Type::UShort)
-            ),
-            (W8, W32, Zero) => writeln!(
+            )?),
+            (W8, W32, Zero) => Ok(writeln!(
                 self.buf,
                 "  movzbl {}, {}",
                 name(src, Type::UChar),
                 name(dst, Type::UInt)
-            ),
-            (W8, W64, Zero) => writeln!(
+            )?),
+            (W8, W64, Zero) => Ok(writeln!(
                 self.buf,
                 "  movzbq {}, {}",
                 name(src, Type::UChar),
                 name(dst, Type::ULong)
-            ),
-            (W16, W32, Zero) => writeln!(
+            )?),
+            (W16, W32, Zero) => Ok(writeln!(
                 self.buf,
                 "  movzwl {}, {}",
                 name(src, Type::UShort),
                 name(dst, Type::UInt)
-            ),
-            (W16, W64, Zero) => writeln!(
+            )?),
+            (W16, W64, Zero) => Ok(writeln!(
                 self.buf,
                 "  movzwq {}, {}",
                 name(src, Type::UShort),
                 name(dst, Type::ULong)
-            ),
-            (W32, W64, Zero) => writeln!(
+            )?),
+            (W32, W64, Zero) => Ok(writeln!(
                 self.buf,
                 "  movl {}, {}",
                 src.reg_name32(),
                 dst.reg_name32()
-            ),
+            )?),
 
             // Sign-extend
-            (W8, W16, Ext::Sign) => writeln!(
+            (W8, W16, Ext::Sign) => Ok(writeln!(
                 self.buf,
                 "  movsbw {}, {}",
                 name(src, Type::Char),
                 name(dst, Type::Short)
-            ),
-            (W8, W32, Ext::Sign) => writeln!(
+            )?),
+            (W8, W32, Ext::Sign) => Ok(writeln!(
                 self.buf,
                 "  movsbl {}, {}",
                 name(src, Type::Char),
                 name(dst, Type::Int)
-            ),
-            (W8, W64, Ext::Sign) => writeln!(
+            )?),
+            (W8, W64, Ext::Sign) => Ok(writeln!(
                 self.buf,
                 "  movsbq {}, {}",
                 name(src, Type::Char),
                 name(dst, Type::Long)
-            ),
-            (W16, W32, Ext::Sign) => writeln!(
+            )?),
+            (W16, W32, Ext::Sign) => Ok(writeln!(
                 self.buf,
                 "  movswl {}, {}",
                 name(src, Type::Short),
                 name(dst, Type::Int)
-            ),
-            (W16, W64, Ext::Sign) => writeln!(
+            )?),
+            (W16, W64, Ext::Sign) => Ok(writeln!(
                 self.buf,
                 "  movswq {}, {}",
                 name(src, Type::Short),
                 name(dst, Type::Long)
-            ),
-            (W32, W64, Ext::Sign) => writeln!(
+            )?),
+            (W32, W64, Ext::Sign) => Ok(writeln!(
                 self.buf,
                 "  movslq {}, {}",
                 src.reg_name32(),
                 dst.reg_name64()
-            ),
+            )?),
             _ => panic!(),
+        }
+    }
+
+    fn emit_binop(
+        &mut self,
+        op: BinaryOp,
+        rl: Reg,
+        tl: Type,
+        rr: Reg,
+        tr: Type,
+        rd: Reg,
+    ) -> Result<()> {
+        let work_ty = tl.working_type(tr.clone());
+        let work_w = work_ty.width();
+        let work_s = work_ty.is_signed();
+
+        let rtmp = Reg::R11;
+        self.emit_widen(rl, tl.clone(), rd, work_ty.clone())?;
+        self.emit_widen(rr, tr, rtmp, work_ty.clone())?;
+
+        let suf = work_w.suffix();
+
+        match op {
+            BinaryOp::Add => {
+                writeln!(
+                    self.buf,
+                    "  add{} {}, {}",
+                    suf,
+                    rtmp.reg_name_for_type(&work_ty)?,
+                    rd.reg_name_for_type(&work_ty)?
+                )?;
+                Ok(())
+            }
+            BinaryOp::Subtract => {
+                writeln!(
+                    self.buf,
+                    "  sub{} {}, {}",
+                    suf,
+                    rtmp.reg_name_for_type(&work_ty)?,
+                    rd.reg_name_for_type(&work_ty)?
+                )?;
+                Ok(())
+            }
+
+            BinaryOp::Multiply => {
+                writeln!(
+                    self.buf,
+                    "  imul{} {}, {}",
+                    suf,
+                    rtmp.reg_name_for_type(&work_ty)?,
+                    rd.reg_name_for_type(&work_ty)?
+                )?;
+                Ok(())
+            }
+
+            BinaryOp::Divide | BinaryOp::Remainder => match work_w {
+                Width::W32 => {
+                    if rd != Reg::AX {
+                        writeln!(
+                            self.buf,
+                            "  movl {}, {}",
+                            rd.reg_name32(),
+                            Reg::AX.reg_name32()
+                        )?;
+                    }
+                    match work_s {
+                        true => writeln!(self.buf, "  cltd")?,
+                        false => writeln!(
+                            self.buf,
+                            "  xorl {}, {}",
+                            Reg::DX.reg_name32(),
+                            Reg::DX.reg_name32()
+                        )?,
+                    }
+                    let divop = if work_s { "idiv" } else { "div" };
+                    writeln!(self.buf, "  {} {}", divop, rtmp.reg_name32())?;
+                    let src = if op == BinaryOp::Divide {
+                        Reg::AX.reg_name32()
+                    } else {
+                        Reg::DX.reg_name32()
+                    };
+                    writeln!(self.buf, "  movl {}, {}", src, rd.reg_name32())?;
+                    Ok(())
+                }
+                Width::W64 => {
+                    if rd != Reg::AX {
+                        writeln!(
+                            self.buf,
+                            "  movq {}, {}",
+                            rd.reg_name64(),
+                            Reg::AX.reg_name64()
+                        )?;
+                    }
+                    match work_s {
+                        true => writeln!(self.buf, "  cqto")?,
+                        false => writeln!(
+                            self.buf,
+                            "  xorq {}, {}",
+                            Reg::DX.reg_name64(),
+                            Reg::DX.reg_name64()
+                        )?,
+                    }
+                    let divop = if work_s { "idiv" } else { "div" };
+                    writeln!(self.buf, "  {} {}", divop, rtmp.reg_name64())?;
+                    let src = if matches!(op, BinaryOp::Divide) {
+                        Reg::AX.reg_name64()
+                    } else {
+                        Reg::DX.reg_name64()
+                    };
+                    writeln!(self.buf, "  movq {}, {}", src, rd.reg_name64())?;
+                    Ok(())
+                }
+                Width::W16 => {
+                    if rd != Reg::AX {
+                        writeln!(
+                            self.buf,
+                            "  movw {}, {}",
+                            rd.reg_name16(),
+                            Reg::AX.reg_name16()
+                        )?;
+                    }
+                    match work_s {
+                        true => writeln!(self.buf, "  cwtd")?,
+                        false => writeln!(
+                            self.buf,
+                            "  xorw {}, {}",
+                            Reg::DX.reg_name16(),
+                            Reg::DX.reg_name16()
+                        )?,
+                    }
+                    let divop = if work_s { "idiv" } else { "div" };
+                    writeln!(self.buf, "  {} {}", divop, rtmp.reg_name16())?;
+                    let src = if matches!(op, BinaryOp::Divide) {
+                        Reg::AX.reg_name16()
+                    } else {
+                        Reg::DX.reg_name16()
+                    };
+                    writeln!(self.buf, "  movw {}, {}", src, rd.reg_name16())?;
+                    Ok(())
+                }
+                Width::W8 => {
+                    if rd != Reg::AX {
+                        writeln!(
+                            self.buf,
+                            "  movb {}, {}",
+                            rd.reg_name8(),
+                            Reg::AX.reg_name8()
+                        )?;
+                    }
+                    match work_s {
+                        true => writeln!(self.buf, "  cbtw")?,
+                        false => writeln!(self.buf, "  movzbl %al, %eax")?,
+                    }
+                    let divop = if work_s { "idiv" } else { "div" };
+                    writeln!(self.buf, "  {} {}", divop, rtmp.reg_name8())?;
+                    let src = if op == BinaryOp::Divide {
+                        Reg::AX.reg_name8()
+                    } else {
+                        "%ah"
+                    };
+                    writeln!(self.buf, "  movb {}, {}", src, rd.reg_name8())?;
+                    Ok(())
+                }
+            },
+
+            BinaryOp::Equal
+            | BinaryOp::NotEqual
+            | BinaryOp::LessThan
+            | BinaryOp::LessOrEqual
+            | BinaryOp::GreaterThan
+            | BinaryOp::GreaterOrEqual => {
+                writeln!(
+                    self.buf,
+                    "  cmp{} {}, {}",
+                    suf,
+                    rtmp.reg_name_for_type(&work_ty)?,
+                    rd.reg_name_for_type(&work_ty)?
+                )?;
+
+                let cc = match op {
+                    BinaryOp::Equal => "e",
+                    BinaryOp::NotEqual => "ne",
+                    BinaryOp::LessThan => {
+                        if work_s {
+                            "l"
+                        } else {
+                            "b"
+                        }
+                    }
+                    BinaryOp::LessOrEqual => {
+                        if work_s {
+                            "le"
+                        } else {
+                            "be"
+                        }
+                    }
+                    BinaryOp::GreaterThan => {
+                        if work_s {
+                            "g"
+                        } else {
+                            "a"
+                        }
+                    }
+                    BinaryOp::GreaterOrEqual => {
+                        if work_s {
+                            "ge"
+                        } else {
+                            "ae"
+                        }
+                    }
+                    _ => unreachable!(),
+                };
+
+                writeln!(self.buf, "  set{} %al", cc)?;
+                writeln!(self.buf, "  movzbl %al, {}", rd.reg_name32())?;
+                Ok(())
+            }
+            _ => todo!(),
         }
     }
 }

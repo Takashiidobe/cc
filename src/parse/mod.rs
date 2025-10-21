@@ -227,6 +227,17 @@ pub(crate) enum Width {
     W64,
 }
 
+impl Width {
+    pub(crate) fn suffix(&self) -> char {
+        match self {
+            Width::W8 => 'b',
+            Width::W16 => 'w',
+            Width::W32 => 'l',
+            Width::W64 => 'q',
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum Type {
     Char,
@@ -338,7 +349,8 @@ impl Type {
             Short | UShort => 16,
             Int | UInt => 32,
             Long | ULong | Double => 64,
-            Void | Pointer(_) | Array(_, _) | IncompleteArray(_) | FunType(_, _) => {
+            Void => 0,
+            Pointer(_) | Array(_, _) | IncompleteArray(_) | FunType(_, _) => {
                 todo!("invalid type size")
             }
         }
@@ -353,7 +365,26 @@ impl Type {
             Type::Double => 8,
             Type::Pointer(_) => 8,
             Type::Array(inner, len) => len * inner.byte_size(),
-            Type::IncompleteArray(_) | Type::Void | Type::FunType(_, _) => {
+            Type::IncompleteArray(t) => t.byte_size(),
+            Type::Void => 1,
+            Type::FunType(_, _) => {
+                panic!("No size");
+            }
+        }
+    }
+
+    pub(crate) fn byte_align(&self) -> usize {
+        match self {
+            Type::Void => 1,
+            Type::Char | Type::SChar | Type::UChar => 2,
+            Type::Short | Type::UShort => 2,
+            Type::Int | Type::UInt => 4,
+            Type::Long | Type::ULong => 8,
+            Type::Double => 8,
+            Type::Pointer(_) => 8,
+            Type::Array(inner, _) => inner.byte_align(),
+            Type::IncompleteArray(t) => t.byte_align(),
+            Type::FunType(_, _) => {
                 panic!("No size");
             }
         }
