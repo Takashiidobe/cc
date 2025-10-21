@@ -1,7 +1,7 @@
 use thiserror::Error;
 
 #[derive(Debug, Error)]
-pub enum TokenizerError {
+pub(crate) enum TokenizerError {
     #[error("unsupported escape `{0}` at byte {1}")]
     UnsupportedEscape(char, usize),
 
@@ -10,9 +10,6 @@ pub enum TokenizerError {
 
     #[error("invalid string literal: {0}")]
     InvalidStringLiteral(String),
-
-    #[error("unterminated string literal: {0}")]
-    UnterminatedStringLiteral(String),
 
     #[error("truncated escape at byte {0} in {1}")]
     TruncatedEscapeSequence(usize, String),

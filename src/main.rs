@@ -1,9 +1,9 @@
-pub mod cli;
-pub mod codegen;
-pub mod parse;
-pub mod semantic;
-pub mod tacky;
-pub mod tokenize;
+pub(crate) mod cli;
+pub(crate) mod codegen;
+pub(crate) mod parse;
+pub(crate) mod semantic;
+pub(crate) mod tacky;
+pub(crate) mod tokenize;
 
 use std::fs;
 

@@ -6,17 +6,17 @@ use crate::{
 };
 
 #[derive(Default)]
-pub struct LoopLabeler {
+pub(crate) struct LoopLabeler {
     next_loop_id: usize,
     loop_stack: Vec<usize>,
 }
 
 impl LoopLabeler {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self::default()
     }
 
-    pub fn label_program(mut self, program: Program) -> Result<Program, LoopLabelerError> {
+    pub(crate) fn label_program(mut self, program: Program) -> Result<Program, LoopLabelerError> {
         let decls: Result<Vec<_>, _> = program
             .0
             .into_iter()

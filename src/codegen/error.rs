@@ -8,7 +8,7 @@ use crate::{
 };
 
 #[derive(Error, Debug)]
-pub enum CodegenError {
+pub(crate) enum CodegenError {
     #[error("io error: {0}")]
     Io(#[from] io::Error),
 
@@ -29,13 +29,6 @@ pub enum CodegenError {
     LabelInitializerRequiresPointer(Type),
     #[error("null-terminated initializer missing trailing NUL byte")]
     MissingTrailingNullInAsciz,
-
-    #[error("type has no size: {0:?}")]
-    TypeHasNoSize(Type),
-    #[error("type has no alignment: {0:?}")]
-    TypeHasNoAlignment(Type),
-    #[error("array size exceeds i64: {0}")]
-    ArraySizeTooLarge(u128),
 
     #[error("unsupported function return type {0:?}")]
     UnsupportedFunctionReturnType(Type),
@@ -92,4 +85,4 @@ pub enum CodegenError {
     MovUnsupported(Type),
 }
 
-pub type Result<T = ()> = std::result::Result<T, CodegenError>;
+pub(crate) type Result<T = ()> = std::result::Result<T, CodegenError>;

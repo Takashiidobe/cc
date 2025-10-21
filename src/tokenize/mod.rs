@@ -1,4 +1,4 @@
-pub mod error;
+pub(crate) mod error;
 
 use logos::Logos;
 
@@ -6,7 +6,7 @@ use crate::tokenize::error::TokenizerError;
 
 #[derive(Debug, Clone, PartialEq, Logos)]
 #[logos(skip r"[ \t\r\n\f]+")]
-pub enum TokenKind {
+pub(crate) enum TokenKind {
     #[token("false", |_| false)]
     #[token("true", |_| true)]
     Bool(bool),
@@ -246,14 +246,14 @@ pub enum TokenKind {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct Token {
-    pub kind: TokenKind,
-    pub start: usize,
-    pub end: usize,
-    pub source: String,
+pub(crate) struct Token {
+    pub(crate) kind: TokenKind,
+    pub(crate) start: usize,
+    pub(crate) end: usize,
+    pub(crate) source: String,
 }
 
-pub fn tokenize(source: &str) -> anyhow::Result<Vec<Token>> {
+pub(crate) fn tokenize(source: &str) -> anyhow::Result<Vec<Token>> {
     let mut lexer = TokenKind::lexer(source);
     let mut tokens = vec![];
 

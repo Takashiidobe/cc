@@ -4,22 +4,22 @@ use clap::{Parser, arg, command};
 
 #[derive(Debug, Parser)]
 #[command(version, about)]
-pub struct Args {
+pub(crate) struct Args {
     #[arg(long, short = 'S', group = "flag")]
-    pub codegen: bool,
+    pub(crate) codegen: bool,
     #[arg(long, short, group = "flag")]
-    pub parse: bool,
+    pub(crate) parse: bool,
     #[arg(long, short, group = "flag")]
-    pub lex: bool,
+    pub(crate) lex: bool,
 
     #[arg(value_parser = path_exists)]
-    pub input_path: PathBuf,
+    pub(crate) input_path: PathBuf,
 
     #[clap(env, long, short)]
-    pub verbose: bool,
+    pub(crate) verbose: bool,
 }
 
-pub fn path_exists(s: &str) -> Result<PathBuf, String> {
+pub(crate) fn path_exists(s: &str) -> Result<PathBuf, String> {
     let path = PathBuf::from_str(s).map_err(|e| format!("Invalid path: {}", e))?;
     if path.exists() {
         Ok(path)

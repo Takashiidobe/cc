@@ -3,7 +3,7 @@ mod types;
 
 use std::collections::BTreeMap;
 
-pub use crate::{
+pub(crate) use crate::{
     parse::{
         Const, DeclKind, Expr, ExprKind, ForInit, FunctionDecl, ParameterDecl,
         Program as AstProgram, Stmt, StmtKind, StorageClass, Type, VariableDecl,
@@ -17,7 +17,7 @@ pub use crate::{
     },
 };
 
-pub struct TackyGen {
+pub(crate) struct TackyGen {
     tmp_counter: usize,
     label_counter: usize,
     program: AstProgram,
@@ -60,7 +60,7 @@ impl TackyGen {
             .ok_or(IRError::NoLoopContext(id))
     }
 
-    pub fn new(program: AstProgram) -> Self {
+    pub(crate) fn new(program: AstProgram) -> Self {
         let mut global_types = BTreeMap::new();
         let mut function_signatures = BTreeMap::new();
         for decl in &program.0 {
@@ -89,7 +89,7 @@ impl TackyGen {
         }
     }
 
-    pub fn codegen(mut self) -> IResult<Program> {
+    pub(crate) fn codegen(mut self) -> IResult<Program> {
         let mut items = Vec::new();
         let decls = std::mem::take(&mut self.program.0);
         for decl in decls {

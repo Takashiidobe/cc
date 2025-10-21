@@ -3,45 +3,45 @@ use std::collections::BTreeMap;
 use crate::parse::{Const, Type};
 
 #[derive(Debug, Clone)]
-pub struct Program {
-    pub items: Vec<TopLevel>,
-    pub global_types: BTreeMap<String, Type>,
+pub(crate) struct Program {
+    pub(crate) items: Vec<TopLevel>,
+    pub(crate) global_types: BTreeMap<String, Type>,
 }
 
 #[derive(Debug, Clone)]
-pub enum TopLevel {
+pub(crate) enum TopLevel {
     Function(Function),
     StaticVariable(StaticVariable),
     StaticConstant(StaticConstant),
 }
 
 #[derive(Debug, Clone)]
-pub struct Function {
-    pub name: String,
-    pub global: bool,
-    pub params: Vec<String>,
-    pub return_type: Type,
-    pub instructions: Vec<Instruction>,
-    pub value_types: BTreeMap<String, Type>,
+pub(crate) struct Function {
+    pub(crate) name: String,
+    pub(crate) global: bool,
+    pub(crate) params: Vec<String>,
+    pub(crate) return_type: Type,
+    pub(crate) instructions: Vec<Instruction>,
+    pub(crate) value_types: BTreeMap<String, Type>,
 }
 
 #[derive(Debug, Clone)]
-pub struct StaticVariable {
-    pub name: String,
-    pub global: bool,
-    pub ty: Type,
-    pub init: Vec<StaticInit>,
+pub(crate) struct StaticVariable {
+    pub(crate) name: String,
+    pub(crate) global: bool,
+    pub(crate) ty: Type,
+    pub(crate) init: Vec<StaticInit>,
 }
 
 #[derive(Debug, Clone)]
-pub struct StaticConstant {
-    pub name: String,
-    pub ty: Type,
-    pub init: StaticInit,
+pub(crate) struct StaticConstant {
+    pub(crate) name: String,
+    pub(crate) ty: Type,
+    pub(crate) init: StaticInit,
 }
 
 #[derive(Debug, Clone)]
-pub enum StaticInit {
+pub(crate) enum StaticInit {
     Scalar {
         offset: i64,
         value: Const,
@@ -58,14 +58,14 @@ pub enum StaticInit {
 }
 
 #[derive(Debug, Clone)]
-pub enum Value {
+pub(crate) enum Value {
     Constant(Const),
     Var(String),
     Global(String),
 }
 
 #[derive(Debug, Clone)]
-pub enum Instruction {
+pub(crate) enum Instruction {
     Return(Value),
     Unary {
         op: UnaryOp,
@@ -141,14 +141,14 @@ pub enum Instruction {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum UnaryOp {
+pub(crate) enum UnaryOp {
     Negate,
     Complement,
     Not,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BinaryOp {
+pub(crate) enum BinaryOp {
     Add,
     Subtract,
     Multiply,
@@ -167,8 +167,8 @@ pub enum BinaryOp {
     RightShift,
 }
 
-pub struct LoopContext {
-    pub id: usize,
-    pub break_label: String,
-    pub continue_label: String,
+pub(crate) struct LoopContext {
+    pub(crate) id: usize,
+    pub(crate) break_label: String,
+    pub(crate) continue_label: String,
 }

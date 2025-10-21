@@ -1,5 +1,5 @@
-pub mod error;
-pub mod reg;
+pub(crate) mod error;
+pub(crate) mod reg;
 
 use crate::codegen::error::{CodegenError, Result};
 use std::collections::{BTreeMap, BTreeSet};
@@ -13,8 +13,8 @@ use crate::tacky::{
     StaticVariable, TopLevel, UnaryOp, Value,
 };
 
-pub struct Codegen<W: Write> {
-    pub buf: W,
+pub(crate) struct Codegen<W: Write> {
+    pub(crate) buf: W,
     stack_map: BTreeMap<String, i64>,
     frame_size: i64,
     global_types: BTreeMap<String, Type>,
@@ -22,7 +22,7 @@ pub struct Codegen<W: Write> {
 }
 
 impl<W: Write> Codegen<W> {
-    pub fn new(buf: W) -> Self {
+    pub(crate) fn new(buf: W) -> Self {
         Self {
             buf,
             stack_map: BTreeMap::new(),
@@ -32,7 +32,7 @@ impl<W: Write> Codegen<W> {
         }
     }
 
-    pub fn lower(&mut self, program: &TackyProgram) -> Result<()> {
+    pub(crate) fn lower(&mut self, program: &TackyProgram) -> Result<()> {
         self.global_types = program.global_types.clone();
         for item in &program.items {
             match item {

@@ -6,7 +6,7 @@ use crate::{
 };
 
 #[derive(PartialEq, Debug, Clone, Copy)]
-pub enum Reg {
+pub(crate) enum Reg {
     AX,
     CX,
     DX,
@@ -19,7 +19,7 @@ pub enum Reg {
 }
 
 #[derive(PartialEq, Debug, Clone, Copy)]
-pub enum FloatReg {
+pub(crate) enum FloatReg {
     XMM0,
     XMM1,
     XMM2,
@@ -31,7 +31,7 @@ pub enum FloatReg {
 }
 
 impl FloatReg {
-    pub const COUNT: usize = 8;
+    pub(crate) const COUNT: usize = 8;
 }
 
 impl From<usize> for FloatReg {
@@ -65,11 +65,11 @@ impl fmt::Display for FloatReg {
     }
 }
 
-pub const ARGUMENT_REGISTERS: [Reg; 6] =
+pub(crate) const ARGUMENT_REGISTERS: [Reg; 6] =
     [Reg::DI, Reg::SI, Reg::DX, Reg::CX, Reg::R8, Reg::R9];
 
 impl Reg {
-    pub fn reg_name_for_type(
+    pub(crate) fn reg_name_for_type(
         &self,
         ty: &Type,
     ) -> anyhow::Result<&'static str, CodegenError> {
@@ -84,7 +84,7 @@ impl Reg {
         }
     }
 
-    pub fn reg_name64(&self) -> &'static str {
+    pub(crate) fn reg_name64(&self) -> &'static str {
         match self {
             Reg::AX => "%rax",
             Reg::CX => "%rcx",
@@ -98,7 +98,7 @@ impl Reg {
         }
     }
 
-    pub fn reg_name32(&self) -> &'static str {
+    pub(crate) fn reg_name32(&self) -> &'static str {
         match self {
             Reg::AX => "%eax",
             Reg::CX => "%ecx",
@@ -112,7 +112,7 @@ impl Reg {
         }
     }
 
-    pub fn reg_name16(&self) -> &'static str {
+    pub(crate) fn reg_name16(&self) -> &'static str {
         match self {
             Reg::AX => "%ax",
             Reg::CX => "%cx",
@@ -126,7 +126,7 @@ impl Reg {
         }
     }
 
-    pub fn reg_name8(&self) -> &'static str {
+    pub(crate) fn reg_name8(&self) -> &'static str {
         match self {
             Reg::AX => "%al",
             Reg::CX => "%cl",
@@ -141,7 +141,7 @@ impl Reg {
     }
 }
 
-pub fn width_suffix(w: Width) -> char {
+pub(crate) fn width_suffix(w: Width) -> char {
     match w {
         Width::W8 => 'b',
         Width::W16 => 'w',
@@ -151,7 +151,7 @@ pub fn width_suffix(w: Width) -> char {
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum Ext {
+pub(crate) enum Ext {
     Unknown,
     Zero,
     Sign,

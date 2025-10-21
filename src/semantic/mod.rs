@@ -1,5 +1,5 @@
 #![allow(clippy::result_large_err)]
-pub mod loop_label;
+pub(crate) mod loop_label;
 
 use std::collections::BTreeMap;
 
@@ -14,10 +14,7 @@ use crate::{
 };
 
 #[derive(Error, Debug)]
-pub enum SemanticError {
-    #[error("Cannot cast `{0:?}` to `{1}`")]
-    ExprCastError(Expr, Type),
-
+pub(crate) enum SemanticError {
     #[error("Cannot cast from type `{0}` to `{1}`")]
     CastToError(Type, Type),
 
@@ -35,9 +32,6 @@ pub enum SemanticError {
 
     #[error("String literal cannot initialize type {0:?}")]
     InvalidStringLiteral(Type),
-
-    #[error("Function '{0}' called with invalid arguments (expected {1:?}, got {2:?})")]
-    InvalidFunctionArguments(String, Vec<Type>, Vec<Type>),
 
     #[error("Undeclared identifier: {0}")]
     UndeclaredIdentifier(String),
@@ -80,25 +74,22 @@ pub enum SemanticError {
 
     #[error("{0} requires lvalue")]
     LValueRequired(&'static str),
-
-    #[error("type has no integer rank: {0:?}")]
-    NoIntegerRank(Type),
 }
 
 #[derive(Clone)]
-pub struct Symbol {
+pub(crate) struct Symbol {
     unique: String,
     ty: Type,
 }
 
 #[derive(Clone)]
-pub struct FunctionSignature {
+pub(crate) struct FunctionSignature {
     return_type: Type,
     param_types: Vec<Type>,
 }
 
 #[derive(Default)]
-pub struct SemanticAnalyzer {
+pub(crate) struct SemanticAnalyzer {
     counter: usize,
     scopes: Vec<BTreeMap<String, Symbol>>,
     functions: BTreeMap<String, FunctionSignature>,
@@ -106,11 +97,11 @@ pub struct SemanticAnalyzer {
 }
 
 impl SemanticAnalyzer {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self::default()
     }
 
-    pub fn analyze_program(mut self, program: Program) -> Result<Program, SemanticError> {
+    pub(crate) fn analyze_program(mut self, program: Program) -> Result<Program, SemanticError> {
         self.enter_scope();
 
         for decl in &program.0 {
@@ -489,7 +480,7 @@ impl SemanticAnalyzer {
         })
     }
 
-    pub fn analyze_expr(&mut self, expr: Expr) -> Result<Expr, SemanticError> {
+    pub(crate) fn analyze_expr(&mut self, expr: Expr) -> Result<Expr, SemanticError> {
         self.analyze_expr_internal(expr, true)
     }
 

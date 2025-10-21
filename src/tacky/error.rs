@@ -2,10 +2,10 @@ use thiserror::Error;
 
 use crate::parse::Type;
 
-pub type IResult<T> = Result<T, IRError>;
+pub(crate) type IResult<T> = Result<T, IRError>;
 
 #[derive(Error, Debug, Clone)]
-pub enum IRError {
+pub(crate) enum IRError {
     #[error("unexpected state: {0}")]
     State(&'static str),
     #[error("loop stack underflow")]
@@ -28,12 +28,6 @@ pub enum IRError {
     UnknownTemporary(String),
     #[error("unknown global {0}")]
     UnknownGlobal(String),
-    #[error("unsupported conversion from {0:?} to {1:?}")]
-    UnsupportedConversion(Type, Type),
-    #[error("value of type {0:?} has no bit width")]
-    NoBitWidth(Type),
-    #[error("type {0:?} has no integer rank")]
-    NoRank(Type),
     #[error("unsupported operand types {0:?} and {1:?}")]
     UnsupportedOperands(Type, Type),
     #[error("mismatched constant for double conversion")]
@@ -58,12 +52,8 @@ pub enum IRError {
     PointerAddUnsupported,
     #[error("integer minus pointer is not supported")]
     IntMinusPtrUnsupported,
-    #[error("invalid pointer element size {0}")]
-    BadPointerElemSize(i64),
     #[error("expected pointer type, found {0:?}")]
     ExpectedPointer(Type),
-    #[error("array size exceeds i64")]
-    ArraySizeI64Overflow,
     #[error("{0}")]
     Generic(&'static str),
 }

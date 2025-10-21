@@ -4,11 +4,11 @@ use crate::tokenize::{Token, TokenKind};
 use std::convert::TryFrom;
 use std::{fmt, mem};
 
-pub type Expr = Node<ExprKind>;
-pub type Stmt = Node<StmtKind>;
+pub(crate) type Expr = Node<ExprKind>;
+pub(crate) type Stmt = Node<StmtKind>;
 
 #[derive(Error, Debug, Clone)]
-pub enum ParserError {
+pub(crate) enum ParserError {
     #[error("unexpected end of input{0}")]
     UnexpectedEof(&'static str),
 
@@ -78,32 +78,23 @@ pub enum ParserError {
     #[error("expected identifier or '(' in declarator, found {0:?}")]
     ExpectedIdentOrParen(TokenKind),
 
-    #[error("unexpected token while parsing (found {0:?})")]
-    UnexpectedToken(TokenKind),
-
     #[error("Expected primary expression, found {0:?}")]
     ExpectedPrimary(TokenKind),
-
-    #[error("integer literal '{0}' does not fit in 32 bits")]
-    IntegerLiteralOutOfRange(i32),
-
-    #[error("internal: token stream moved beyond end")]
-    CursorPastEnd,
 }
 
 type PResult<T> = Result<T, ParserError>;
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct Program(pub Vec<Decl>);
+pub(crate) struct Program(pub(crate) Vec<Decl>);
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum StorageClass {
+pub(crate) enum StorageClass {
     Static,
     Extern,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum ExprKind {
+pub(crate) enum ExprKind {
     Constant(Const),
     String(String),
     Var(String),
@@ -148,45 +139,45 @@ pub enum ExprKind {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct VariableDecl {
-    pub name: String,
-    pub init: Option<Expr>,
-    pub storage_class: Option<StorageClass>,
-    pub r#type: Type,
-    pub is_definition: bool,
+pub(crate) struct VariableDecl {
+    pub(crate) name: String,
+    pub(crate) init: Option<Expr>,
+    pub(crate) storage_class: Option<StorageClass>,
+    pub(crate) r#type: Type,
+    pub(crate) is_definition: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct ParameterDecl {
-    pub name: String,
-    pub r#type: Type,
+pub(crate) struct ParameterDecl {
+    pub(crate) name: String,
+    pub(crate) r#type: Type,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct FunctionDecl {
-    pub name: String,
-    pub params: Vec<ParameterDecl>,
-    pub body: Option<Vec<Stmt>>,
-    pub storage_class: Option<StorageClass>,
-    pub return_type: Type,
+pub(crate) struct FunctionDecl {
+    pub(crate) name: String,
+    pub(crate) params: Vec<ParameterDecl>,
+    pub(crate) body: Option<Vec<Stmt>>,
+    pub(crate) storage_class: Option<StorageClass>,
+    pub(crate) return_type: Type,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum DeclKind {
+pub(crate) enum DeclKind {
     Function(FunctionDecl),
     Variable(VariableDecl),
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct Decl {
-    pub kind: DeclKind,
-    pub start: usize,
-    pub end: usize,
-    pub source: String,
+pub(crate) struct Decl {
+    pub(crate) kind: DeclKind,
+    pub(crate) start: usize,
+    pub(crate) end: usize,
+    pub(crate) source: String,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum StmtKind {
+pub(crate) enum StmtKind {
     Expr(Expr),
     Return(Expr),
     Compound(Vec<Stmt>),
@@ -223,13 +214,13 @@ pub enum StmtKind {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum ForInit {
+pub(crate) enum ForInit {
     Declaration(Box<Stmt>),
     Expr(Option<Expr>),
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum Width {
+pub(crate) enum Width {
     W8,
     W16,
     W32,
@@ -237,7 +228,7 @@ pub enum Width {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum Type {
+pub(crate) enum Type {
     Char,
     SChar,
     UChar,
@@ -277,7 +268,7 @@ impl fmt::Display for Type {
 }
 
 impl Type {
-    pub fn type_rank(&self) -> usize {
+    pub(crate) fn type_rank(&self) -> usize {
         match self {
             Type::Char | Type::SChar => 0,
             Type::UChar => 1,
@@ -295,23 +286,23 @@ impl Type {
             | Type::IncompleteArray(_) => panic!("Cannot be compared"),
         }
     }
-    pub fn is_void(&self) -> bool {
+    pub(crate) fn is_void(&self) -> bool {
         matches!(self, Type::Void)
     }
 
-    pub fn is_unsigned(&self) -> bool {
+    pub(crate) fn is_unsigned(&self) -> bool {
         matches!(self, Type::UChar | Type::UInt | Type::ULong)
     }
 
-    pub fn is_signed(&self) -> bool {
+    pub(crate) fn is_signed(&self) -> bool {
         self.is_integer() && !self.is_unsigned()
     }
 
-    pub fn is_pointer(&self) -> bool {
+    pub(crate) fn is_pointer(&self) -> bool {
         matches!(self, Type::Pointer(_))
     }
 
-    pub fn is_integer(&self) -> bool {
+    pub(crate) fn is_integer(&self) -> bool {
         matches!(
             self,
             Type::Char
@@ -326,7 +317,7 @@ impl Type {
         )
     }
 
-    pub fn width(&self) -> Width {
+    pub(crate) fn width(&self) -> Width {
         use Type::*;
         match self {
             SChar | Char | UChar => Width::W8,
@@ -340,7 +331,7 @@ impl Type {
         }
     }
 
-    pub fn bit_width(&self) -> usize {
+    pub(crate) fn bit_width(&self) -> usize {
         use Type::*;
         match self {
             SChar | Char | UChar => 8,
@@ -353,7 +344,7 @@ impl Type {
         }
     }
 
-    pub fn byte_size(&self) -> usize {
+    pub(crate) fn byte_size(&self) -> usize {
         match self {
             Type::Char | Type::SChar | Type::UChar => 1,
             Type::Short | Type::UShort => 2,
@@ -368,7 +359,7 @@ impl Type {
         }
     }
 
-    pub fn integer_promotion(&self) -> Type {
+    pub(crate) fn integer_promotion(&self) -> Type {
         use Type::*;
         match self {
             Char | UChar => Int,
@@ -377,7 +368,7 @@ impl Type {
         }
     }
 
-    pub fn working_type(&self, rhs: Type) -> Type {
+    pub(crate) fn working_type(&self, rhs: Type) -> Type {
         use Type::*;
 
         let a = self.integer_promotion();
@@ -419,21 +410,21 @@ impl Type {
         }
     }
 
-    pub fn is_char(&self) -> bool {
+    pub(crate) fn is_char(&self) -> bool {
         matches!(self, Type::Char | Type::SChar | Type::UChar)
     }
 
-    pub fn is_floating(&self) -> bool {
+    pub(crate) fn is_floating(&self) -> bool {
         matches!(self, Type::Double)
     }
 
-    pub fn is_numeric(&self) -> bool {
+    pub(crate) fn is_numeric(&self) -> bool {
         self.is_integer() || self.is_floating()
     }
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum Const {
+pub(crate) enum Const {
     Char(i8),
     UChar(u8),
     Short(i16),
@@ -446,20 +437,20 @@ pub enum Const {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct Node<Kind> {
-    pub kind: Kind,
-    pub start: usize,
-    pub end: usize,
-    pub source: String,
-    pub r#type: Type,
+pub(crate) struct Node<Kind> {
+    pub(crate) kind: Kind,
+    pub(crate) start: usize,
+    pub(crate) end: usize,
+    pub(crate) source: String,
+    pub(crate) r#type: Type,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct Parser {
-    pub source: Vec<char>,
-    pub index: usize,
-    pub tokens: Vec<Token>,
-    pub pos: usize,
+pub(crate) struct Parser {
+    pub(crate) source: Vec<char>,
+    pub(crate) index: usize,
+    pub(crate) tokens: Vec<Token>,
+    pub(crate) pos: usize,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -673,7 +664,7 @@ impl TypeSpecifierState {
 }
 
 impl Parser {
-    pub fn new(source: Vec<char>, tokens: Vec<Token>) -> Self {
+    pub(crate) fn new(source: Vec<char>, tokens: Vec<Token>) -> Self {
         Self {
             source,
             tokens,
@@ -682,7 +673,7 @@ impl Parser {
         }
     }
 
-    pub fn parse(&mut self) -> PResult<Program> {
+    pub(crate) fn parse(&mut self) -> PResult<Program> {
         let mut decls = Vec::new();
         while self.pos < self.tokens.len() {
             decls.push(self.declaration()?);
