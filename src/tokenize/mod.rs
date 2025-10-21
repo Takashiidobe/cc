@@ -194,6 +194,9 @@ pub(crate) enum TokenKind {
     #[token("?")]
     Question,
 
+    #[token("short")]
+    Short,
+
     #[regex(r"([0-9]+)", |lex| lex.slice().parse::<i32>().unwrap(), priority = 5)]
     Integer(i32),
 

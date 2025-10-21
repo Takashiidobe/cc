@@ -564,8 +564,9 @@ impl TypeExpr {
 struct TypeSpecifierState {
     saw_void: bool,
     saw_double: bool,
-    saw_long: bool,
+    saw_short: bool,
     saw_int: bool,
+    saw_long: bool,
     saw_char: bool,
     signedness: Option<bool>,
     is_const: bool,
@@ -609,6 +610,23 @@ impl TypeSpecifierState {
                     return Err(ParserError::DuplicateTypeSpecifier("int"));
                 }
                 self.saw_int = true;
+            }
+            TokenKind::Short => {
+                if self.saw_char
+                    || self.saw_void
+                    || self.saw_double
+                    || self.saw_long
+                    || self.saw_int
+                {
+                    return Err(ParserError::ConflictingTypeSpecifiers(
+                        "char",
+                        "void/double/long/int",
+                    ));
+                }
+                if self.saw_short {
+                    return Err(ParserError::DuplicateTypeSpecifier("short"));
+                }
+                self.saw_short = true;
             }
             TokenKind::Char => {
                 if self.saw_void || self.saw_double || self.saw_long || self.saw_int {
@@ -655,6 +673,7 @@ impl TypeSpecifierState {
         self.saw_void
             || self.saw_double
             || self.saw_long
+            || self.saw_short
             || self.saw_int
             || self.saw_char
             || self.signedness.is_some()
@@ -757,6 +776,7 @@ impl Parser {
                     consumed_any = true;
                 }
                 Some(TokenKind::Int)
+                | Some(TokenKind::Short)
                 | Some(TokenKind::Long)
                 | Some(TokenKind::Void)
                 | Some(TokenKind::Signed)
@@ -2053,6 +2073,7 @@ impl Parser {
                 | TokenKind::Long
                 | TokenKind::Double
                 | TokenKind::Char
+                | TokenKind::Short
                 | TokenKind::Unsigned
                 | TokenKind::Signed
                 | TokenKind::Void
