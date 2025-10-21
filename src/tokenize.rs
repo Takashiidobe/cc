@@ -192,15 +192,15 @@ pub enum TokenKind {
     #[token("?")]
     Question,
 
-    #[regex(r"([0-9]+)", |lex| lex.slice().parse::<i64>().unwrap(), priority = 5)]
-    Integer(i64),
+    #[regex(r"([0-9]+)", |lex| lex.slice().parse::<i32>().unwrap(), priority = 5)]
+    Integer(i32),
 
     #[regex(
         r"([0-9]+)[uU]",
-        |lex| lex.slice()[..lex.slice().len() - 1].parse::<u64>().unwrap(),
+        |lex| lex.slice()[..lex.slice().len() - 1].parse::<u32>().unwrap(),
         priority = 7
     )]
-    UnsignedInteger(u64),
+    UnsignedInteger(u32),
 
     #[regex(
         r"([0-9]+)[lL]",

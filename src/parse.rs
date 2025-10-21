@@ -85,7 +85,7 @@ pub enum ParserError {
     ExpectedPrimary(TokenKind),
 
     #[error("integer literal '{0}' does not fit in 32 bits")]
-    IntegerLiteralOutOfRange(i64),
+    IntegerLiteralOutOfRange(i32),
 
     #[error("internal: token stream moved beyond end")]
     CursorPastEnd,
@@ -308,8 +308,8 @@ pub enum Const {
     Char(i8),
     UChar(u8),
     Int(i32),
+    UInt(u32),
     Long(i64),
-    UInt(u64),
     ULong(u64),
     Double(f64),
 }
@@ -685,14 +685,25 @@ impl Parser {
 
     fn parse_array_size(&mut self) -> PResult<usize> {
         match self.peek_kind() {
-            Some(TokenKind::Integer(n)) | Some(TokenKind::LongInteger(n)) => {
+            Some(TokenKind::Integer(n)) => {
                 if n < 0 {
                     return Err(ParserError::NegativeArraySize);
                 }
                 self.advance()?;
                 usize::try_from(n).map_err(|_| ParserError::ArraySizeTooLarge(n as i128))
             }
-            Some(TokenKind::UnsignedInteger(n)) | Some(TokenKind::UnsignedLongInteger(n)) => {
+            Some(TokenKind::LongInteger(n)) => {
+                if n < 0 {
+                    return Err(ParserError::NegativeArraySize);
+                }
+                self.advance()?;
+                usize::try_from(n).map_err(|_| ParserError::ArraySizeTooLarge(n as i128))
+            }
+            Some(TokenKind::UnsignedInteger(n)) => {
+                self.advance()?;
+                usize::try_from(n).map_err(|_| ParserError::ArraySizeTooLarge(n as i128))
+            }
+            Some(TokenKind::UnsignedLongInteger(n)) => {
                 self.advance()?;
                 usize::try_from(n).map_err(|_| ParserError::ArraySizeTooLarge(n as i128))
             }
@@ -744,7 +755,7 @@ impl Parser {
 
     fn declaration(&mut self) -> PResult<Decl> {
         if self.pos >= self.tokens.len() {
-            return Err(ParserError::UnexpectedEof(" while parsing declaration"));
+            return Err(ParserError::UnexpectedEof("while parsing declaration"));
         }
 
         let Token { start, .. } = self.peek()?;
@@ -1715,10 +1726,8 @@ impl Parser {
         match kind.clone() {
             TokenKind::Integer(n) => {
                 self.advance()?;
-                let value =
-                    i32::try_from(n).map_err(|_| ParserError::IntegerLiteralOutOfRange(n))?;
                 Ok(Expr {
-                    kind: ExprKind::Constant(Const::Int(value)),
+                    kind: ExprKind::Constant(Const::Int(n)),
                     start,
                     end,
                     source,

@@ -261,19 +261,12 @@ impl<W: Write> Codegen<W> {
                 writeln!(self.buf, "  .long {}", v)?;
             }
             (Type::UInt, Const::UInt(v)) => {
-                let truncated = v & 0xffff_ffff;
-                writeln!(self.buf, "  .long {}", truncated)?;
+                writeln!(self.buf, "  .long {}", v)?;
             }
-            (Type::Long, Const::Long(v)) => {
+            (Type::Long, Const::Long(v)) | (Type::Pointer(_), Const::Long(v)) => {
                 writeln!(self.buf, "  .quad {}", v)?;
             }
-            (Type::ULong, Const::ULong(v)) => {
-                writeln!(self.buf, "  .quad {}", v)?;
-            }
-            (Type::Pointer(_), Const::Long(v)) => {
-                writeln!(self.buf, "  .quad {}", v)?;
-            }
-            (Type::Pointer(_), Const::ULong(v)) => {
+            (Type::ULong, Const::ULong(v)) | (Type::Pointer(_), Const::ULong(v)) => {
                 writeln!(self.buf, "  .quad {}", v)?;
             }
             (Type::Double, Const::Double(v)) => {
@@ -1421,21 +1414,13 @@ impl<W: Write> Codegen<W> {
             return Err(CodegenError::LoadDoubleIntoGpr);
         }
         match value {
-            Value::Constant(Const::Char(n)) => {
-                writeln!(
-                    self.buf,
-                    "  movb ${}, {}",
-                    *n,
-                    reg.reg_name_for_type(&Type::Char)?
-                )?;
-            }
-            Value::Constant(Const::UChar(n)) => {
-                writeln!(
-                    self.buf,
-                    "  movb ${}, {}",
-                    *n,
-                    reg.reg_name_for_type(&Type::UChar)?
-                )?;
+            Value::Constant(c @ Const::Char(_) | c @ Const::UChar(_)) => {
+                let (imm, ty) = match c {
+                    Const::Char(n) => (*n as u8, Type::Char),
+                    Const::UChar(n) => (*n, Type::UChar),
+                    _ => unreachable!(),
+                };
+                writeln!(self.buf, "  movb ${}, {}", imm, reg.reg_name_for_type(&ty)?)?;
             }
             Value::Constant(Const::Int(n)) => {
                 writeln!(
@@ -1445,9 +1430,6 @@ impl<W: Write> Codegen<W> {
                     reg.reg_name_for_type(&Type::Int)?
                 )?;
             }
-            Value::Constant(Const::Long(n)) => {
-                writeln!(self.buf, "  movq ${}, {}", n, reg.reg_name64())?;
-            }
             Value::Constant(Const::UInt(n)) => {
                 writeln!(
                     self.buf,
@@ -1455,6 +1437,9 @@ impl<W: Write> Codegen<W> {
                     n,
                     reg.reg_name_for_type(&Type::UInt)?
                 )?;
+            }
+            Value::Constant(Const::Long(n)) => {
+                writeln!(self.buf, "  movq ${}, {}", n, reg.reg_name64())?;
             }
             Value::Constant(Const::ULong(n)) => {
                 writeln!(self.buf, "  movq ${}, {}", n, reg.reg_name64())?;
