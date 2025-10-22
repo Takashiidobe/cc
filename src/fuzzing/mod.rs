@@ -28,25 +28,22 @@ impl Arbitrary for Program {
 }
 
 fn gen_main(g: &mut Gen) -> FunctionDecl {
-    let stmt = stmt(StmtKind::Return(gen_expr(g, Type::Int)), Type::Int);
-
     FunctionDecl {
         name: String::from("main"),
         params: vec![],
-        body: Some(vec![stmt]),
+        body: Some(gen_stmts(g, 10)),
         storage_class: None,
         return_type: Type::Int,
     }
 }
 
-fn stmt(kind: StmtKind, r#type: Type) -> Stmt {
-    Stmt {
-        kind,
-        start: 0,
-        end: 0,
-        source: "".to_string(),
-        r#type,
+fn gen_stmts(g: &mut Gen, times: usize) -> Vec<Stmt> {
+    let mut stmts = vec![];
+    for _ in 0..=times {
+        stmts.push(gen_stmt(g, Type::Int));
     }
+
+    stmts
 }
 
 fn fn_decl(function: FunctionDecl) -> Decl {
@@ -54,7 +51,17 @@ fn fn_decl(function: FunctionDecl) -> Decl {
         kind: DeclKind::Function(function),
         start: 0,
         end: 0,
-        source: "".to_string(),
+        source: String::new(),
+    }
+}
+
+fn gen_stmt(g: &mut Gen, r#type: Type) -> Stmt {
+    Stmt {
+        kind: rand_stmt_kind(g, r#type.clone()),
+        start: 0,
+        end: 0,
+        source: String::new(),
+        r#type,
     }
 }
 
@@ -112,6 +119,19 @@ fn gen_binary(g: &mut Gen, r#type: Type) -> Expr {
         end: 0,
         source: String::new(),
         r#type,
+    }
+}
+
+fn rand_stmt_kind(g: &mut Gen, r#type: Type) -> StmtKind {
+    match u8::arbitrary(g) % 16 {
+        0..8 => StmtKind::Expr(gen_expr(g, r#type)),
+        8..13 => StmtKind::Return(gen_expr(g, r#type)),
+        13..15 => StmtKind::Compound(gen_stmts(g, 2)),
+        _ => StmtKind::If {
+            condition: gen_expr(g, r#type.clone()),
+            then_branch: Box::new(gen_stmt(g, r#type.clone())),
+            else_branch: Some(Box::new(gen_stmt(g, r#type.clone()))),
+        },
     }
 }
 
