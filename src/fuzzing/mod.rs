@@ -4,14 +4,14 @@
 pub(crate) mod display;
 
 use crate::parse::{
-    Const, Decl, DeclKind, Expr, ExprKind, FunctionDecl, Program, Stmt, StmtKind, StorageClass,
-    Type, VariableDecl,
+    Const, Decl, DeclKind, Expr, ExprKind, FunctionDecl, Program, Stmt, StmtKind, Type,
 };
 use quickcheck::{Arbitrary, Gen, empty_shrinker};
 
 // find a way to use variables by keeping variables in a given scope
 // if you "create" a function/decl, you can then refer to it as you iterate through with scopes.
 // First create a program that returns int main(void) { return number; }
+// Second, create a program that returns int main(void) { return -number | +number or ~number };
 
 pub(crate) fn generate() -> String {
     let mut qc_gen = Gen::new(16);
@@ -21,12 +21,7 @@ pub(crate) fn generate() -> String {
 
 impl Arbitrary for Program {
     fn arbitrary(g: &mut Gen) -> Self {
-        Program(vec![Decl {
-            kind: DeclKind::Function(gen_main(g)),
-            start: 0,
-            end: 0,
-            source: "".to_string(),
-        }])
+        Program(vec![fn_decl(gen_main(g))])
     }
 
     fn shrink(&self) -> Box<dyn Iterator<Item = Self>> {
@@ -35,18 +30,10 @@ impl Arbitrary for Program {
 }
 
 fn gen_main(g: &mut Gen) -> FunctionDecl {
-    let name = "main";
-
-    let stmt = Stmt {
-        kind: StmtKind::Return(constant_expr(Const::Char(i8::arbitrary(g)), Type::Int)),
-        start: 0,
-        end: 0,
-        source: "".to_string(),
-        r#type: Type::Int,
-    };
+    let stmt = stmt(StmtKind::Return(gen_expr(g, Type::Int)), Type::Int);
 
     FunctionDecl {
-        name: name.to_string(),
+        name: String::from("main"),
         params: vec![],
         body: Some(vec![stmt]),
         storage_class: None,
@@ -54,89 +41,75 @@ fn gen_main(g: &mut Gen) -> FunctionDecl {
     }
 }
 
-fn random_variable_decl(g: &mut Gen, index: usize) -> Decl {
-    let name = format!("{}_{}", random_identifier(g), index);
-    let r#type = random_type(g);
-    let storage_class = random_storage_class(g);
-    let is_extern = matches!(storage_class, Some(StorageClass::Extern));
-    let allow_initializer = !is_extern;
-    let init = if allow_initializer && bool::arbitrary(g) {
-        Some(random_initializer(&r#type, g))
-    } else {
-        None
-    };
-    let variable_decl = VariableDecl {
-        name,
-        init,
-        storage_class: storage_class.clone(),
-        r#type: r#type.clone(),
-        is_definition: !is_extern,
-    };
-    let source = variable_decl.to_string();
-    Decl {
-        kind: DeclKind::Variable(variable_decl),
+fn stmt(kind: StmtKind, r#type: Type) -> Stmt {
+    Stmt {
+        kind,
         start: 0,
-        end: source.len(),
-        source,
+        end: 0,
+        source: "".to_string(),
+        r#type,
     }
 }
 
-fn random_identifier(g: &mut Gen) -> String {
-    let len = usize::arbitrary(g) % 6 + 1;
-    let mut ident = String::with_capacity(len);
-    ident.push(random_letter(g));
-    for _ in 1..len {
-        ident.push(random_alphanumeric(g));
-    }
-    ident
-}
-
-fn random_letter(g: &mut Gen) -> char {
-    (b'a' + (u8::arbitrary(g) % 26)) as char
-}
-
-fn random_alphanumeric(g: &mut Gen) -> char {
-    match u8::arbitrary(g) % 36 {
-        n if n < 26 => (b'a' + n) as char,
-        n => (b'0' + (n - 26)) as char,
+fn fn_decl(function: FunctionDecl) -> Decl {
+    Decl {
+        kind: DeclKind::Function(function),
+        start: 0,
+        end: 0,
+        source: "".to_string(),
     }
 }
 
-fn random_type(g: &mut Gen) -> Type {
-    match u8::arbitrary(g) % 3 {
-        0 => Type::Int,
-        1 => Type::UInt,
-        _ => Type::Long,
+fn gen_expr(g: &mut Gen, r#type: Type) -> Expr {
+    match bool::arbitrary(g) {
+        true => constant_expr(g, r#type),
+        false => gen_unary(g, r#type),
     }
 }
 
-fn random_storage_class(g: &mut Gen) -> Option<StorageClass> {
-    match u8::arbitrary(g) % 3 {
-        0 => None,
-        1 => Some(StorageClass::Static),
-        _ => Some(StorageClass::Extern),
-    }
-}
+fn constant_expr(g: &mut Gen, r#type: Type) -> Expr {
+    let constant = match r#type {
+        Type::Char | Type::SChar => Const::Char(i8::arbitrary(g)),
+        Type::UChar => Const::UChar(u8::arbitrary(g)),
+        Type::Short => Const::Short(i16::arbitrary(g)),
+        Type::UShort => Const::UShort(u16::arbitrary(g)),
+        Type::Int => Const::Int(i32::arbitrary(g)),
+        Type::Long => Const::Long(i64::arbitrary(g)),
+        Type::UInt => Const::UInt(u32::arbitrary(g)),
+        Type::ULong => Const::ULong(u64::arbitrary(g)),
+        Type::Double => Const::Double(f64::arbitrary(g)),
+        _ => todo!(),
+    };
 
-fn random_initializer(r#type: &Type, g: &mut Gen) -> Expr {
-    match r#type {
-        Type::Int => constant_expr(Const::Int(i32::arbitrary(g)), Type::Int),
-        Type::UInt => constant_expr(Const::UInt(u32::arbitrary(g)), Type::UInt),
-        Type::Long => constant_expr(Const::Long(i64::arbitrary(g)), Type::Long),
-        Type::Char | Type::SChar => constant_expr(Const::Char(i8::arbitrary(g)), Type::Char),
-        Type::UChar => constant_expr(Const::UChar(u8::arbitrary(g)), Type::UChar),
-        Type::Short => constant_expr(Const::Short(i16::arbitrary(g)), Type::Short),
-        Type::UShort => constant_expr(Const::UShort(u16::arbitrary(g)), Type::UShort),
-        _ => constant_expr(Const::Int(i32::arbitrary(g)), Type::Int),
-    }
-}
-
-fn constant_expr(constant: Const, r#type: Type) -> Expr {
     Expr {
         kind: ExprKind::Constant(constant),
         start: 0,
         end: 0,
         source: String::new(),
         r#type,
+    }
+}
+
+// now we want to either gen a unary or a binary expr or a const
+fn gen_unary(g: &mut Gen, r#type: Type) -> Expr {
+    let expr_kind = gen_expr(g, r#type.clone());
+
+    Expr {
+        kind: rand_unary_kind(g, expr_kind),
+        start: 0,
+        end: 0,
+        source: String::new(),
+        r#type,
+    }
+}
+
+fn gen_binary(g: &mut Gen) -> Expr {
+    todo!()
+}
+
+fn rand_unary_kind(g: &mut Gen, expr: Expr) -> ExprKind {
+    match bool::arbitrary(g) {
+        true => ExprKind::BitNot(Box::new(expr)),
+        false => ExprKind::Neg(Box::new(expr)),
     }
 }

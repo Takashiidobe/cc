@@ -76,8 +76,12 @@ impl fmt::Display for VariableDecl {
     }
 }
 
+// ExprKinds are parenthesized because Neg(Neg(50)) (--50) is not considered legal. It is ok though
+// as -(-50) or (-(-(50))) or something similar.
 impl fmt::Display for ExprKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "(")?;
+
         f.write_str(&match self {
             ExprKind::Constant(c) => c.to_string(),
             ExprKind::String(s) => s.clone(),
@@ -167,7 +171,9 @@ impl fmt::Display for ExprKind {
             ExprKind::Assignment(lhs, rhs) => {
                 format!("{} = {}", lhs.kind, rhs.kind)
             }
-        })
+        })?;
+
+        write!(f, ")")
     }
 }
 
