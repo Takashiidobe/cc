@@ -10,8 +10,6 @@ use quickcheck::{Arbitrary, Gen, empty_shrinker};
 
 // find a way to use variables by keeping variables in a given scope
 // if you "create" a function/decl, you can then refer to it as you iterate through with scopes.
-// First create a program that returns int main(void) { return number; }
-// Second, create a program that returns int main(void) { return -number | +number or ~number };
 
 pub(crate) fn generate() -> String {
     let mut qc_gen = Gen::new(16);
@@ -61,9 +59,10 @@ fn fn_decl(function: FunctionDecl) -> Decl {
 }
 
 fn gen_expr(g: &mut Gen, r#type: Type) -> Expr {
-    match bool::arbitrary(g) {
-        true => constant_expr(g, r#type),
-        false => gen_unary(g, r#type),
+    match u8::arbitrary(g) % 3 {
+        0 => constant_expr(g, r#type),
+        1 => gen_unary(g, r#type),
+        _ => gen_binary(g, r#type),
     }
 }
 
@@ -103,13 +102,46 @@ fn gen_unary(g: &mut Gen, r#type: Type) -> Expr {
     }
 }
 
-fn gen_binary(g: &mut Gen) -> Expr {
-    todo!()
+fn gen_binary(g: &mut Gen, r#type: Type) -> Expr {
+    let lhs = gen_expr(g, r#type.clone());
+    let rhs = gen_expr(g, r#type.clone());
+
+    Expr {
+        kind: rand_binary_kind(g, lhs, rhs),
+        start: 0,
+        end: 0,
+        source: String::new(),
+        r#type,
+    }
+}
+
+fn rand_binary_kind(g: &mut Gen, lhs: Expr, rhs: Expr) -> ExprKind {
+    match u8::arbitrary(g) % 18 {
+        0 => ExprKind::Add(Box::new(lhs), Box::new(rhs)),
+        1 => ExprKind::Sub(Box::new(lhs), Box::new(rhs)),
+        2 => ExprKind::Mul(Box::new(lhs), Box::new(rhs)),
+        3 => ExprKind::Div(Box::new(lhs), Box::new(rhs)),
+        4 => ExprKind::Xor(Box::new(lhs), Box::new(rhs)),
+        5 => ExprKind::BitAnd(Box::new(lhs), Box::new(rhs)),
+        6 => ExprKind::BitOr(Box::new(lhs), Box::new(rhs)),
+        7 => ExprKind::Or(Box::new(lhs), Box::new(rhs)),
+        8 => ExprKind::Rem(Box::new(lhs), Box::new(rhs)),
+        9 => ExprKind::LeftShift(Box::new(lhs), Box::new(rhs)),
+        10 => ExprKind::RightShift(Box::new(lhs), Box::new(rhs)),
+        11 => ExprKind::GreaterThan(Box::new(lhs), Box::new(rhs)),
+        12 => ExprKind::GreaterThanEqual(Box::new(lhs), Box::new(rhs)),
+        13 => ExprKind::LessThan(Box::new(lhs), Box::new(rhs)),
+        14 => ExprKind::LessThanEqual(Box::new(lhs), Box::new(rhs)),
+        15 => ExprKind::Equal(Box::new(lhs), Box::new(rhs)),
+        16 => ExprKind::NotEqual(Box::new(lhs), Box::new(rhs)),
+        _ => ExprKind::And(Box::new(lhs), Box::new(rhs)),
+    }
 }
 
 fn rand_unary_kind(g: &mut Gen, expr: Expr) -> ExprKind {
-    match bool::arbitrary(g) {
-        true => ExprKind::BitNot(Box::new(expr)),
-        false => ExprKind::Neg(Box::new(expr)),
+    match u8::arbitrary(g) % 3 {
+        0 => ExprKind::BitNot(Box::new(expr)),
+        1 => ExprKind::Neg(Box::new(expr)),
+        _ => ExprKind::Not(Box::new(expr)),
     }
 }
