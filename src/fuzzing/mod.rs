@@ -79,7 +79,7 @@ fn gen_expr(g: &mut Gen, r#type: Type) -> Expr {
     match u8::arbitrary(g) % 4 {
         0 => constant_expr(g, r#type),
         1 => gen_unary(g, r#type),
-        2 => gen_primary(g), // this can generate strings, which aren't valid for a program
+        // 2 => gen_incr_decr(g, r#type), // this should only be for variables
         _ => gen_binary(g, r#type),
     }
 }
@@ -133,13 +133,17 @@ fn gen_binary(g: &mut Gen, r#type: Type) -> Expr {
     }
 }
 
-fn gen_primary(g: &mut Gen) -> Expr {
+// only for assignable values
+#[allow(unused)]
+fn gen_incr_decr(g: &mut Gen, r#type: Type) -> Expr {
+    let expr = gen_expr(g, r#type.clone());
+
     Expr {
-        kind: ExprKind::String(String::arbitrary(g)),
+        kind: rand_incr_decr_kind(g, expr),
         start: 0,
         end: 0,
         source: String::new(),
-        r#type: Type::Char,
+        r#type,
     }
 }
 
@@ -191,5 +195,15 @@ fn rand_unary_kind(g: &mut Gen, expr: Expr) -> ExprKind {
         0 => ExprKind::BitNot(Box::new(expr)),
         1 => ExprKind::Neg(Box::new(expr)),
         _ => ExprKind::Not(Box::new(expr)),
+    }
+}
+
+#[allow(unused)]
+fn rand_incr_decr_kind(g: &mut Gen, expr: Expr) -> ExprKind {
+    match u8::arbitrary(g) % 4 {
+        0 => ExprKind::PreIncrement(Box::new(expr)),
+        1 => ExprKind::PreDecrement(Box::new(expr)),
+        2 => ExprKind::PostIncrement(Box::new(expr)),
+        _ => ExprKind::PostDecrement(Box::new(expr)),
     }
 }
