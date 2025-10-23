@@ -265,12 +265,13 @@ pub(crate) fn tokenize(source: &str) -> anyhow::Result<Vec<Token>> {
 
         let (start, end) = (lexer.span().start, lexer.span().end);
         let source = lexer.slice().to_string();
-        tokens.push(Token {
+        let token = Token {
             kind,
             start,
             end,
             source,
-        });
+        };
+        tokens.push(token);
     }
 
     Ok(tokens)

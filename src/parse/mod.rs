@@ -494,7 +494,7 @@ pub(crate) struct Node<Kind> {
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Parser {
-    pub(crate) source: Vec<char>,
+    pub(crate) source: Vec<u8>,
     pub(crate) index: usize,
     pub(crate) tokens: Vec<Token>,
     pub(crate) pos: usize,
@@ -730,7 +730,7 @@ impl TypeSpecifierState {
 }
 
 impl Parser {
-    pub(crate) fn new(source: Vec<char>, tokens: Vec<Token>) -> Self {
+    pub(crate) fn new(source: Vec<u8>, tokens: Vec<Token>) -> Self {
         Self {
             source,
             tokens,
@@ -1181,7 +1181,7 @@ impl Parser {
         let stmts = self.stmts()?;
         self.expect(&TokenKind::RBrace)?;
         let end = self.index;
-        let source: String = self.source[start..end].iter().collect();
+        let source = String::from_utf8_lossy(&self.source[start..end]).to_string();
         Ok(Stmt {
             kind: StmtKind::Compound(stmts),
             start,
@@ -2136,6 +2136,6 @@ impl Parser {
     }
 
     fn source_slice(&self, start: usize, end: usize) -> String {
-        self.source[start..end].iter().collect()
+        String::from_utf8_lossy(&self.source[start..end]).to_string()
     }
 }

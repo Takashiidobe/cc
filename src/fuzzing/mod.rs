@@ -135,7 +135,7 @@ fn gen_binary(g: &mut Gen, r#type: Type) -> Expr {
 
 fn gen_primary(g: &mut Gen) -> Expr {
     Expr {
-        kind: rand_primary_kind(g),
+        kind: ExprKind::String(String::arbitrary(g)),
         start: 0,
         end: 0,
         source: String::new(),
@@ -160,13 +160,6 @@ fn rand_stmt_kind(g: &mut Gen, r#type: Type) -> StmtKind {
             body: Box::new(gen_stmt(g, r#type)),
             loop_id: None,
         },
-    }
-}
-
-fn rand_primary_kind(g: &mut Gen) -> ExprKind {
-    match u8::arbitrary(g) % 4 {
-        1 => ExprKind::String("xd".to_string()),
-        _ => ExprKind::String("".to_string()),
     }
 }
 

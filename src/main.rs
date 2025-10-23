@@ -44,7 +44,7 @@ fn main() -> anyhow::Result<(), Error> {
         if args.verbose {
             eprintln!("{:?}", &tokens);
         }
-        let mut parser = Parser::new(source.chars().collect(), tokens);
+        let mut parser = Parser::new(source.bytes().collect(), tokens);
         let ast = parser.parse();
         eprintln!("{:?}", ast);
     }
@@ -57,7 +57,7 @@ fn main() -> anyhow::Result<(), Error> {
         if args.verbose {
             eprintln!("tokens: {:?}", &tokens);
         }
-        let mut parser = Parser::new(source.chars().collect(), tokens);
+        let mut parser = Parser::new(source.bytes().collect(), tokens);
         let ast = parser.parse()?;
         if args.verbose {
             eprintln!("AST: {:?}", &ast);
