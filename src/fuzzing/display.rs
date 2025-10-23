@@ -84,7 +84,7 @@ impl fmt::Display for ExprKind {
 
         f.write_str(&match self {
             ExprKind::Constant(c) => c.to_string(),
-            ExprKind::String(s) => s.clone(),
+            ExprKind::String(s) => format!("\"{s}\""),
             ExprKind::Var(var) => var.clone(),
             ExprKind::FunctionCall(name, exprs) => {
                 let mut res = String::from(name);

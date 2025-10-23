@@ -76,9 +76,10 @@ fn gen_stmt(g: &mut Gen, r#type: Type) -> Stmt {
 }
 
 fn gen_expr(g: &mut Gen, r#type: Type) -> Expr {
-    match u8::arbitrary(g) % 3 {
+    match u8::arbitrary(g) % 4 {
         0 => constant_expr(g, r#type),
         1 => gen_unary(g, r#type),
+        2 => gen_primary(g), // this can generate strings, which aren't valid for a program
         _ => gen_binary(g, r#type),
     }
 }
@@ -132,6 +133,16 @@ fn gen_binary(g: &mut Gen, r#type: Type) -> Expr {
     }
 }
 
+fn gen_primary(g: &mut Gen) -> Expr {
+    Expr {
+        kind: rand_primary_kind(g),
+        start: 0,
+        end: 0,
+        source: String::new(),
+        r#type: Type::Char,
+    }
+}
+
 fn rand_stmt_kind(g: &mut Gen, r#type: Type) -> StmtKind {
     match u8::arbitrary(g) % 17 {
         0..8 => StmtKind::Expr(gen_expr(g, r#type)),
@@ -149,6 +160,13 @@ fn rand_stmt_kind(g: &mut Gen, r#type: Type) -> StmtKind {
             body: Box::new(gen_stmt(g, r#type)),
             loop_id: None,
         },
+    }
+}
+
+fn rand_primary_kind(g: &mut Gen) -> ExprKind {
+    match u8::arbitrary(g) % 4 {
+        1 => ExprKind::String("xd".to_string()),
+        _ => ExprKind::String("".to_string()),
     }
 }
 
