@@ -77,8 +77,8 @@ fn gen_stmt(g: &mut Gen, r#type: Type) -> Stmt {
 
 fn gen_expr(g: &mut Gen, r#type: Type) -> Expr {
     match u8::arbitrary(g) % 4 {
-        0 => constant_expr(g, r#type),
-        1 => gen_unary(g, r#type),
+        0..2 => constant_expr(g, r#type),
+        2 => gen_unary(g, r#type),
         // 2 => gen_incr_decr(g, r#type), // this should only be for variables
         _ => gen_binary(g, r#type),
     }
