@@ -4,7 +4,7 @@
 pub(crate) mod display;
 
 use crate::parse::{
-    Const, Decl, DeclKind, Expr, ExprKind, FunctionDecl, Program, Stmt, StmtKind, Type,
+    Const, Decl, DeclKind, Expr, ExprKind, ForInit, FunctionDecl, Program, Stmt, StmtKind, Type,
 };
 use quickcheck::{Arbitrary, Gen, empty_shrinker};
 
@@ -19,7 +19,7 @@ pub(crate) fn generate() -> String {
 
 impl Arbitrary for Program {
     fn arbitrary(g: &mut Gen) -> Self {
-        Program(vec![fn_decl(gen_main(g))])
+        Program(vec![gen_fn(g), gen_main(g)])
     }
 
     fn shrink(&self) -> Box<dyn Iterator<Item = Self>> {
@@ -27,19 +27,29 @@ impl Arbitrary for Program {
     }
 }
 
-fn gen_main(g: &mut Gen) -> FunctionDecl {
-    FunctionDecl {
-        name: String::from("main"),
+fn gen_fn(g: &mut Gen) -> Decl {
+    fn_decl(FunctionDecl {
+        name: format!("example_{}", u8::arbitrary(g)),
         params: vec![],
-        body: Some(gen_stmts(g, 10)),
+        body: Some(gen_stmts(g, 8)),
         storage_class: None,
         return_type: Type::Int,
-    }
+    })
+}
+
+fn gen_main(g: &mut Gen) -> Decl {
+    fn_decl(FunctionDecl {
+        name: String::from("main"),
+        params: vec![],
+        body: Some(gen_stmts(g, 8)),
+        storage_class: None,
+        return_type: Type::Int,
+    })
 }
 
 fn gen_stmts(g: &mut Gen, times: usize) -> Vec<Stmt> {
     let mut stmts = vec![];
-    for _ in 0..=times {
+    for _ in 0..times {
         stmts.push(gen_stmt(g, Type::Int));
     }
 
@@ -123,14 +133,21 @@ fn gen_binary(g: &mut Gen, r#type: Type) -> Expr {
 }
 
 fn rand_stmt_kind(g: &mut Gen, r#type: Type) -> StmtKind {
-    match u8::arbitrary(g) % 16 {
+    match u8::arbitrary(g) % 17 {
         0..8 => StmtKind::Expr(gen_expr(g, r#type)),
         8..13 => StmtKind::Return(gen_expr(g, r#type)),
         13..15 => StmtKind::Compound(gen_stmts(g, 2)),
-        _ => StmtKind::If {
+        15 => StmtKind::If {
             condition: gen_expr(g, r#type.clone()),
             then_branch: Box::new(gen_stmt(g, r#type.clone())),
             else_branch: Some(Box::new(gen_stmt(g, r#type.clone()))),
+        },
+        _ => StmtKind::For {
+            init: ForInit::Expr(Some(gen_expr(g, r#type.clone()))),
+            condition: Some(gen_expr(g, r#type.clone())),
+            post: Some(gen_expr(g, r#type.clone())),
+            body: Box::new(gen_stmt(g, r#type)),
+            loop_id: None,
         },
     }
 }

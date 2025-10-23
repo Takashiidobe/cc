@@ -295,7 +295,6 @@ impl fmt::Display for StmtKind {
                 if let Some(post) = post {
                     s.push_str(&post.kind.to_string());
                 }
-                s.push(';');
 
                 s.push_str(") {\n");
                 s.push_str(&body.kind.to_string());

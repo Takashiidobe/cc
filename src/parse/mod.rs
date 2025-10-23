@@ -1916,7 +1916,7 @@ impl Parser {
             TokenKind::Integer(n) => {
                 self.advance()?;
                 Ok(Expr {
-                    kind: ExprKind::Constant(Const::Int(n)),
+                    kind: ExprKind::Constant(Const::Int(n as i32)),
                     start,
                     end,
                     source,
