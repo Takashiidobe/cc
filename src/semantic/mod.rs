@@ -539,6 +539,27 @@ impl SemanticAnalyzer {
                     r#type: symbol.ty.clone(),
                 }
             }
+            ExprKind::SizeOf(expr0) => {
+                let analyzed = self.analyze_expr_no_decay(*expr0)?;
+                let size = self.size_of_type(&analyzed.r#type)?;
+                Expr {
+                    kind: ExprKind::Constant(Const::ULong(size)),
+                    start,
+                    end,
+                    source,
+                    r#type: Type::ULong,
+                }
+            }
+            ExprKind::SizeOfType(ty) => {
+                let size = self.size_of_type(&ty)?;
+                Expr {
+                    kind: ExprKind::Constant(Const::ULong(size)),
+                    start,
+                    end,
+                    source,
+                    r#type: Type::ULong,
+                }
+            }
             ExprKind::FunctionCall(name, args) => {
                 let Some(signature) = self.functions.get(&name).cloned() else {
                     return Err(SemanticError::UndeclaredIdentifier(name));
@@ -1207,9 +1228,17 @@ impl SemanticAnalyzer {
         let from_type = self.decay_array_type(from);
         let to_type = self.decay_array_type(to);
 
-        if (from_type.is_numeric() && to_type.is_numeric())
-            || (from_type.is_pointer() && to_type.is_pointer())
-            || (from_type.is_pointer() && to_type.is_integer())
+        if from_type.is_numeric() && to_type.is_numeric() {
+            return Ok(());
+        }
+
+        if from_type.is_pointer() && to_type.is_pointer() {
+            if Self::pointer_types_compatible(&from_type, &to_type) {
+                return Ok(());
+            }
+        }
+
+        if (from_type.is_pointer() && to_type.is_integer())
             || (from_type.is_integer() && to_type.is_pointer())
         {
             return Ok(());
@@ -1284,6 +1313,21 @@ impl SemanticAnalyzer {
             Type::IncompleteArray(inner) => Type::Pointer(inner),
             Type::FunType(params, ret) => Type::Pointer(Box::new(Type::FunType(params, ret))),
             other => other,
+        }
+    }
+
+    fn size_of_type(&self, ty: &Type) -> Result<u64, SemanticError> {
+        match ty {
+            Type::FunType(_, _) => Err(SemanticError::Unsupported(format!(
+                "cannot apply sizeof to function type `{ty}`"
+            ))),
+            Type::IncompleteArray(_) => Err(SemanticError::Unsupported(format!(
+                "cannot apply sizeof to incomplete type `{ty}`"
+            ))),
+            _ => {
+                let size = ty.byte_size();
+                Ok(size as u64)
+            }
         }
     }
 

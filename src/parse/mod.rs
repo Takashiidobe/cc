@@ -128,6 +128,9 @@ pub(crate) enum ExprKind {
     Xor(Box<Expr>, Box<Expr>),
     BitOr(Box<Expr>, Box<Expr>),
 
+    SizeOf(Box<Expr>),
+    SizeOfType(Type),
+
     PreIncrement(Box<Expr>),
     PreDecrement(Box<Expr>),
     PostIncrement(Box<Expr>),
@@ -1815,6 +1818,38 @@ impl Parser {
                     r#type: Type::Int,
                 })
             }
+            TokenKind::Sizeof => {
+                self.advance()?;
+                let start = token.start;
+
+                if self.is_sizeof_type()? {
+                    self.expect(&TokenKind::LParen)?;
+                    let mut ty = self.parse_type_specifiers()?;
+                    while matches!(self.peek_kind(), Some(TokenKind::Star)) {
+                        self.advance()?;
+                        ty = Type::Pointer(Box::new(ty));
+                    }
+                    self.expect(&TokenKind::RParen)?;
+                    let end = self.index;
+                    return Ok(Expr {
+                        kind: ExprKind::SizeOfType(ty.clone()),
+                        start,
+                        end,
+                        source: self.source_slice(start, end),
+                        r#type: Type::ULong,
+                    });
+                }
+
+                let expr = self.unary()?;
+                let end = expr.end;
+                return Ok(Expr {
+                    kind: ExprKind::SizeOf(Box::new(expr)),
+                    start,
+                    end,
+                    source: self.source_slice(start, end),
+                    r#type: Type::ULong,
+                });
+            }
             _ => self.postfix(),
         }
     }
@@ -2017,6 +2052,53 @@ impl Parser {
     }
 
     fn is_cast_expression(&self) -> PResult<bool> {
+        if self.pos + 1 >= self.tokens.len() {
+            return Ok(false);
+        }
+
+        let mut idx = self.pos + 1;
+        let mut state = TypeSpecifierState::default();
+        let mut consumed_any = false;
+
+        while idx < self.tokens.len() {
+            let kind = &self.tokens[idx].kind;
+            match kind {
+                TokenKind::Int
+                | TokenKind::Long
+                | TokenKind::Void
+                | TokenKind::Signed
+                | TokenKind::Unsigned
+                | TokenKind::Double
+                | TokenKind::Char
+                | TokenKind::Const => {
+                    state.add(kind)?;
+                    consumed_any = true;
+                    idx += 1;
+                }
+                TokenKind::Star => {
+                    if !consumed_any {
+                        return Ok(false);
+                    }
+                    idx += 1;
+                }
+                TokenKind::RParen => {
+                    if !consumed_any {
+                        return Ok(false);
+                    }
+                    let _ = state.resolve()?;
+                    return Ok(true);
+                }
+                _ => return Ok(false),
+            }
+        }
+
+        Ok(false)
+    }
+
+    fn is_sizeof_type(&self) -> PResult<bool> {
+        if !matches!(self.peek_kind(), Some(TokenKind::LParen)) {
+            return Ok(false);
+        }
         if self.pos + 1 >= self.tokens.len() {
             return Ok(false);
         }

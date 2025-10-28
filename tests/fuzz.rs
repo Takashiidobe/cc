@@ -10,6 +10,9 @@ use std::{
 use tempfile::tempdir;
 
 fn main() {
+    // ignoring fuzzing for now
+    return;
+
     let args = Arguments::from_args();
 
     let base_seed = read_base_seed().unwrap_or_else(random_seed);

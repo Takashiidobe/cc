@@ -191,6 +191,9 @@ pub(crate) enum TokenKind {
     #[token("continue")]
     Continue,
 
+    #[token("sizeof")]
+    Sizeof,
+
     #[token("?")]
     Question,
 

@@ -171,6 +171,8 @@ impl fmt::Display for ExprKind {
             ExprKind::Assignment(lhs, rhs) => {
                 format!("{} = {}", lhs.kind, rhs.kind)
             }
+            ExprKind::SizeOf(node) => format!("sizeof({})", node.kind),
+            ExprKind::SizeOfType(t) => format!("sizeof({})", t),
         })?;
 
         write!(f, ")")

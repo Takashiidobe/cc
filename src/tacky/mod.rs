@@ -1047,6 +1047,8 @@ impl TackyGen {
                 }
                 _ => return Err(IRError::BadAssignTarget),
             },
+            ExprKind::SizeOf(node) => Value::Constant(Const::ULong(expr.r#type.byte_size() as u64)),
+            ExprKind::SizeOfType(t) => Value::Constant(Const::ULong(t.byte_size() as u64)),
         })
     }
 
