@@ -1,8 +1,8 @@
 use std::fmt;
 
 use crate::parse::{
-    Decl, DeclKind, ExprKind, ForInit, FunctionDecl, Program, Stmt, StmtKind, StorageClass,
-    VariableDecl,
+    Decl, DeclKind, ExprKind, ForInit, FunctionDecl, MemberDeclaration, Program,
+    StructDeclaration, Stmt, StmtKind, StorageClass, VariableDecl,
 };
 
 impl fmt::Display for Program {
@@ -19,7 +19,24 @@ impl fmt::Display for Decl {
         match &self.kind {
             DeclKind::Function(function_decl) => writeln!(f, "{}", function_decl),
             DeclKind::Variable(variable_decl) => writeln!(f, "{}", variable_decl),
+            DeclKind::Struct(struct_decl) => writeln!(f, "{}", struct_decl),
         }
+    }
+}
+
+impl fmt::Display for StructDeclaration {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "struct {} {{", self.tag)?;
+        for member in &self.members {
+            writeln!(f, "    {} {};", member.member_type, member.member_name)?;
+        }
+        write!(f, "}};")
+    }
+}
+
+impl fmt::Display for MemberDeclaration {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} {}", self.member_type, self.member_name)
     }
 }
 

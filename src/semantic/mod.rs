@@ -7,8 +7,8 @@ use thiserror::Error;
 
 use crate::{
     parse::{
-        Const, Decl, DeclKind, Expr, ExprKind, ForInit, FunctionDecl, ParameterDecl, Program, Stmt,
-        StmtKind, StorageClass, Type, VariableDecl,
+        Const, Decl, DeclKind, Expr, ExprKind, ForInit, FunctionDecl, ParameterDecl, Program,
+        StructDeclaration, Stmt, StmtKind, StorageClass, Type, VariableDecl,
     },
     tokenize::TokenKind,
 };
@@ -129,6 +129,7 @@ impl SemanticAnalyzer {
                     };
                     self.functions.insert(func.name.clone(), signature);
                 }
+                DeclKind::Struct(_) => {}
             }
         }
 
@@ -152,6 +153,7 @@ impl SemanticAnalyzer {
         let kind = match kind {
             DeclKind::Function(func) => DeclKind::Function(self.analyze_function(func)?),
             DeclKind::Variable(var) => DeclKind::Variable(self.analyze_global_variable(var)?),
+            DeclKind::Struct(decl) => DeclKind::Struct(decl),
         };
 
         Ok(Decl {

@@ -80,6 +80,9 @@ pub(crate) enum ParserError {
 
     #[error("Expected primary expression, found {0:?}")]
     ExpectedPrimary(TokenKind),
+
+    #[error("expected identifier")]
+    ExpectedIdentifier,
 }
 
 type PResult<T> = Result<T, ParserError>;
@@ -166,9 +169,22 @@ pub(crate) struct FunctionDecl {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub(crate) struct StructDeclaration {
+    pub(crate) tag: String,
+    pub(crate) members: Vec<MemberDeclaration>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct MemberDeclaration {
+    pub(crate) member_name: String,
+    pub(crate) member_type: Type,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) enum DeclKind {
     Function(FunctionDecl),
     Variable(VariableDecl),
+    Struct(StructDeclaration),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -254,6 +270,7 @@ pub(crate) enum Type {
     ULong,
     Double,
     Void,
+    Struct(String),
     Pointer(Box<Type>),
     Array(Box<Type>, usize),
     IncompleteArray(Box<Type>),
@@ -273,6 +290,7 @@ impl fmt::Display for Type {
             Type::ULong => f.write_str("unsigned long"),
             Type::Double => f.write_str("double"),
             Type::Void => f.write_str("void"),
+            Type::Struct(tag) => f.write_str(&format!("struct {tag}")),
             Type::Pointer(t) => f.write_str(&format!("*{t}")),
             Type::Array(t, len) => f.write_str(&format!("{t}[{len}]")),
             Type::IncompleteArray(t) => f.write_str(&format!("{t}[]")),
@@ -293,6 +311,7 @@ impl Type {
             Type::Long => 6,
             Type::ULong => 7,
             Type::Void
+            | Type::Struct(_)
             | Type::Double
             | Type::Pointer(_)
             | Type::FunType(_, _)
@@ -339,7 +358,7 @@ impl Type {
             Int | UInt => Width::W32,
             Long | ULong => Width::W64,
             Double => todo!(),
-            Void | Pointer(_) | Array(_, _) | IncompleteArray(_) | FunType(_, _) => {
+            Void | Struct(_) | Pointer(_) | Array(_, _) | IncompleteArray(_) | FunType(_, _) => {
                 todo!("invalid type size")
             }
         }
@@ -353,7 +372,7 @@ impl Type {
             Int | UInt => 32,
             Long | ULong | Double => 64,
             Void => 0,
-            Pointer(_) | Array(_, _) | IncompleteArray(_) | FunType(_, _) => {
+            Struct(_) | Pointer(_) | Array(_, _) | IncompleteArray(_) | FunType(_, _) => {
                 todo!("invalid type size")
             }
         }
@@ -370,6 +389,7 @@ impl Type {
             Type::Array(inner, len) => len * inner.byte_size(),
             Type::IncompleteArray(t) => t.byte_size(),
             Type::Void => 1,
+            Type::Struct(_) => todo!("struct size not implemented"),
             Type::FunType(_, _) => {
                 panic!("No size");
             }
@@ -387,6 +407,7 @@ impl Type {
             Type::Pointer(_) => 8,
             Type::Array(inner, _) => inner.byte_align(),
             Type::IncompleteArray(t) => t.byte_align(),
+            Type::Struct(_) => todo!("struct alignment not implemented"),
             Type::FunType(_, _) => {
                 panic!("No size");
             }
@@ -751,23 +772,26 @@ impl Parser {
         Ok(Program(decls))
     }
 
-    fn parse_specifiers(&mut self) -> PResult<(Type, Option<StorageClass>)> {
+    fn parse_specifiers(
+        &mut self,
+    ) -> PResult<(Type, Option<StorageClass>, Option<StructDeclaration>)> {
         self.parse_specifiers_internal(true)
     }
 
-    fn parse_type_specifiers(&mut self) -> PResult<Type> {
-        let (ty, storage) = self.parse_specifiers_internal(false)?;
+    fn parse_type_specifiers(&mut self) -> PResult<(Type, Option<StructDeclaration>)> {
+        let (ty, storage, struct_decl) = self.parse_specifiers_internal(false)?;
         debug_assert!(storage.is_none());
-        Ok(ty)
+        Ok((ty, struct_decl))
     }
 
     fn parse_specifiers_internal(
         &mut self,
         allow_storage: bool,
-    ) -> PResult<(Type, Option<StorageClass>)> {
+    ) -> PResult<(Type, Option<StorageClass>, Option<StructDeclaration>)> {
         let mut storage: Option<StorageClass> = None;
         let mut state = TypeSpecifierState::default();
         let mut consumed_any = false;
+        let mut struct_spec: Option<(Type, Option<StructDeclaration>)> = None;
 
         while self.pos < self.tokens.len() {
             let kind = self.peek_kind();
@@ -794,6 +818,18 @@ impl Parser {
                     storage = Some(StorageClass::Extern);
                     consumed_any = true;
                 }
+                Some(TokenKind::Struct) => {
+                    if struct_spec.is_some() || state.has_type_specifier() {
+                        return Err(ParserError::ConflictingTypeSpecifiers(
+                            "struct",
+                            "other type specifier",
+                        ));
+                    }
+                    self.advance()?;
+                    let parsed = self.parse_struct_specifier()?;
+                    struct_spec = Some(parsed);
+                    consumed_any = true;
+                }
                 Some(TokenKind::Int)
                 | Some(TokenKind::Short)
                 | Some(TokenKind::Long)
@@ -816,8 +852,55 @@ impl Parser {
             return Err(ParserError::ExpectedDeclSpecifiers);
         }
 
-        let ty = state.resolve()?;
-        Ok((ty, storage))
+        let (ty, struct_decl) = if let Some((ty, decl)) = struct_spec {
+            (ty, decl)
+        } else {
+            (state.resolve()?, None)
+        };
+        Ok((ty, storage, struct_decl))
+    }
+
+    fn parse_struct_specifier(&mut self) -> PResult<(Type, Option<StructDeclaration>)> {
+        let tag = match self.peek_kind() {
+            Some(TokenKind::Identifier(name)) => {
+                self.advance()?;
+                name
+            }
+            _ => return Err(ParserError::ExpectedIdentifier),
+        };
+
+        if matches!(self.peek_kind(), Some(TokenKind::LBrace)) {
+            self.advance()?;
+            let members = self.parse_struct_member_declarations()?;
+            self.expect(&TokenKind::RBrace)?;
+            let decl = StructDeclaration {
+                tag: tag.clone(),
+                members,
+            };
+            Ok((Type::Struct(tag), Some(decl)))
+        } else {
+            Ok((Type::Struct(tag), None))
+        }
+    }
+
+    fn parse_struct_member_declarations(&mut self) -> PResult<Vec<MemberDeclaration>> {
+        let mut members = Vec::new();
+
+        while !matches!(self.peek_kind(), Some(TokenKind::RBrace)) {
+            let (base_type, _) = self.parse_type_specifiers()?;
+            let declarator = self.parse_declarator()?;
+            let member_type = declarator.type_expr.apply(base_type);
+            if matches!(member_type, Type::FunType(_, _)) {
+                return Err(ParserError::VariableWithFunctionType);
+            }
+            self.expect(&TokenKind::Semicolon)?;
+            members.push(MemberDeclaration {
+                member_name: declarator.name,
+                member_type,
+            });
+        }
+
+        Ok(members)
     }
 
     fn parse_declarator(&mut self) -> PResult<ParsedDeclarator> {
@@ -936,7 +1019,7 @@ impl Parser {
     }
 
     fn parse_parameter(&mut self) -> PResult<ParameterDecl> {
-        let base_type = self.parse_type_specifiers()?;
+        let (base_type, _) = self.parse_type_specifiers()?;
         let declarator = self.parse_declarator()?;
         let param_type = declarator.type_expr.apply(base_type);
         Ok(ParameterDecl {
@@ -951,7 +1034,28 @@ impl Parser {
         }
 
         let Token { start, .. } = self.peek()?;
-        let (base_type, storage_class) = self.parse_specifiers()?;
+        let (base_type, storage_class, struct_decl) = self.parse_specifiers()?;
+
+        if matches!(self.peek_kind(), Some(TokenKind::Semicolon)) {
+            if let Type::Struct(tag) = &base_type {
+                self.advance()?;
+                let end = self.index;
+                let source = self.source_slice(start, end);
+                let decl = match struct_decl {
+                    Some(decl) => decl,
+                    None => StructDeclaration {
+                        tag: tag.clone(),
+                        members: Vec::new(),
+                    },
+                };
+                return Ok(Decl {
+                    kind: DeclKind::Struct(decl),
+                    start,
+                    end,
+                    source,
+                });
+            }
+        }
         let declarator = self.parse_declarator()?;
         let name = declarator.name.clone();
 
@@ -1061,7 +1165,7 @@ impl Parser {
 
     fn variable_declaration_stmt(&mut self) -> PResult<Stmt> {
         let Token { start, .. } = self.peek()?;
-        let (base_type, storage_class) = self.parse_specifiers()?;
+        let (base_type, storage_class, _) = self.parse_specifiers()?;
         let declarator = self.parse_declarator()?;
         let name = declarator.name.clone();
         let var_type = declarator.type_expr.apply(base_type);
@@ -1700,7 +1804,7 @@ impl Parser {
         if matches!(self.peek_kind(), Some(TokenKind::LParen)) && self.is_cast_expression()? {
             let Token { start, .. } = self.peek()?;
             self.advance()?;
-            let base_type = self.parse_type_specifiers()?;
+            let (base_type, _) = self.parse_type_specifiers()?;
             let mut cast_type = base_type;
             while matches!(self.peek_kind(), Some(TokenKind::Star)) {
                 self.advance()?;
@@ -1824,7 +1928,8 @@ impl Parser {
 
                 if self.is_sizeof_type()? {
                     self.expect(&TokenKind::LParen)?;
-                    let mut ty = self.parse_type_specifiers()?;
+                    let (base_type, _) = self.parse_type_specifiers()?;
+                    let mut ty = base_type;
                     while matches!(self.peek_kind(), Some(TokenKind::Star)) {
                         self.advance()?;
                         ty = Type::Pointer(Box::new(ty));
@@ -2052,94 +2157,47 @@ impl Parser {
     }
 
     fn is_cast_expression(&self) -> PResult<bool> {
-        if self.pos + 1 >= self.tokens.len() {
+        if !matches!(self.peek_kind(), Some(TokenKind::LParen)) {
             return Ok(false);
         }
 
-        let mut idx = self.pos + 1;
-        let mut state = TypeSpecifierState::default();
-        let mut consumed_any = false;
+        let mut clone = self.clone();
+        clone.advance()?; // consume '('
 
-        while idx < self.tokens.len() {
-            let kind = &self.tokens[idx].kind;
-            match kind {
-                TokenKind::Int
-                | TokenKind::Long
-                | TokenKind::Void
-                | TokenKind::Signed
-                | TokenKind::Unsigned
-                | TokenKind::Double
-                | TokenKind::Char
-                | TokenKind::Const => {
-                    state.add(kind)?;
-                    consumed_any = true;
-                    idx += 1;
-                }
-                TokenKind::Star => {
-                    if !consumed_any {
-                        return Ok(false);
-                    }
-                    idx += 1;
-                }
-                TokenKind::RParen => {
-                    if !consumed_any {
-                        return Ok(false);
-                    }
-                    let _ = state.resolve()?;
-                    return Ok(true);
-                }
-                _ => return Ok(false),
-            }
+        let parse_result = clone.parse_type_specifiers();
+        let _ = match parse_result {
+            Ok(res) => res,
+            Err(ParserError::ExpectedDeclSpecifiers) => return Ok(false),
+            Err(e) => return Err(e),
+        };
+
+        while matches!(clone.peek_kind(), Some(TokenKind::Star)) {
+            clone.advance()?;
         }
 
-        Ok(false)
+        Ok(matches!(clone.peek_kind(), Some(TokenKind::RParen)))
     }
 
     fn is_sizeof_type(&self) -> PResult<bool> {
         if !matches!(self.peek_kind(), Some(TokenKind::LParen)) {
             return Ok(false);
         }
-        if self.pos + 1 >= self.tokens.len() {
-            return Ok(false);
+
+        let mut clone = self.clone();
+        clone.advance()?; // consume '('
+
+        let parse_result = clone.parse_type_specifiers();
+        let _ = match parse_result {
+            Ok(res) => res,
+            Err(ParserError::ExpectedDeclSpecifiers) => return Ok(false),
+            Err(e) => return Err(e),
+        };
+
+        while matches!(clone.peek_kind(), Some(TokenKind::Star)) {
+            clone.advance()?;
         }
 
-        let mut idx = self.pos + 1;
-        let mut state = TypeSpecifierState::default();
-        let mut consumed_any = false;
-
-        while idx < self.tokens.len() {
-            let kind = &self.tokens[idx].kind;
-            match kind {
-                TokenKind::Int
-                | TokenKind::Long
-                | TokenKind::Void
-                | TokenKind::Signed
-                | TokenKind::Unsigned
-                | TokenKind::Double
-                | TokenKind::Char
-                | TokenKind::Const => {
-                    state.add(kind)?;
-                    consumed_any = true;
-                    idx += 1;
-                }
-                TokenKind::Star => {
-                    if !consumed_any {
-                        return Ok(false);
-                    }
-                    idx += 1;
-                }
-                TokenKind::RParen => {
-                    if !consumed_any {
-                        return Ok(false);
-                    }
-                    let _ = state.resolve()?;
-                    return Ok(true);
-                }
-                _ => return Ok(false),
-            }
-        }
-
-        Ok(false)
+        Ok(matches!(clone.peek_kind(), Some(TokenKind::RParen)))
     }
 
     fn arguments(&mut self) -> PResult<Vec<Expr>> {
@@ -2175,6 +2233,7 @@ impl Parser {
                 | TokenKind::Unsigned
                 | TokenKind::Signed
                 | TokenKind::Void
+                | TokenKind::Struct
                 | TokenKind::Static
                 | TokenKind::Extern
                 | TokenKind::Const

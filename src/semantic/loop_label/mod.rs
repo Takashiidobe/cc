@@ -36,6 +36,7 @@ impl LoopLabeler {
         let kind = match kind {
             DeclKind::Function(func) => DeclKind::Function(self.label_function(func)?),
             DeclKind::Variable(var) => DeclKind::Variable(var),
+            DeclKind::Struct(decl) => DeclKind::Struct(decl),
         };
 
         Ok(Decl {

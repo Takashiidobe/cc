@@ -200,6 +200,15 @@ pub(crate) enum TokenKind {
     #[token("short")]
     Short,
 
+    #[token("struct")]
+    Struct,
+
+    #[token(".")]
+    Period,
+
+    #[token("->")]
+    Arrow,
+
     #[regex(r"([0-9]+)", |lex| lex.slice().parse::<i64>().unwrap())]
     Integer(i64),
 

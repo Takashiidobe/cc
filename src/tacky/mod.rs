@@ -72,6 +72,7 @@ impl TackyGen {
                     let ps = func.params.iter().map(|p| p.r#type.clone()).collect();
                     function_signatures.insert(func.name.clone(), (ps, func.return_type.clone()));
                 }
+                DeclKind::Struct(_) => {}
             }
         }
         Self {
@@ -104,6 +105,7 @@ impl TackyGen {
                         items.push(TopLevel::StaticVariable(static_var));
                     }
                 }
+                DeclKind::Struct(_) => {}
             }
         }
         for constant in self.string_literals.drain(..) {
@@ -499,6 +501,7 @@ impl TackyGen {
                 Type::IncompleteArray(_) => {
                     return Err(IRError::BadFloatConstTarget("incomplete array type"));
                 }
+                Type::Struct(_) => return Err(IRError::BadFloatConstTarget("struct type")),
             });
         }
 
@@ -551,6 +554,9 @@ impl TackyGen {
                 return Err(IRError::BadFloatConstTarget(
                     "incomplete array from integer const",
                 ));
+            }
+            Type::Struct(_) => {
+                return Err(IRError::BadFloatConstTarget("struct from integer const"));
             }
         })
     }
@@ -1536,6 +1542,9 @@ impl TackyGen {
             }
             Type::Array(_, _) | Type::IncompleteArray(_) => {
                 return Err(IRError::Generic("array increment not supported"));
+            }
+            Type::Struct(_) => {
+                return Err(IRError::Generic("struct increment not supported"));
             }
         }
         instructions.push(Instruction::Copy {
