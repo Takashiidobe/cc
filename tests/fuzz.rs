@@ -1,31 +1,63 @@
 use assert_cmd::cargo::CommandCargoExt as _;
 use libtest_mimic::{Arguments, Failed, Trial};
-use serde::Serialize;
+use rand::{TryRngCore, rngs::OsRng};
 use std::{
-    fs,
+    env, fs,
     path::{Path, PathBuf},
     process::{Command as StdCommand, Output, Stdio},
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tempfile::tempdir;
 
 fn main() {
     let args = Arguments::from_args();
 
-    let count = 100usize;
-    let base_seed = 0xC0D3_C0DEu64;
+    let base_seed = read_base_seed().unwrap_or_else(random_seed);
+
+    let count: usize = env::var("FUZZ_COUNT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(100);
+
+    eprintln!("Fuzz base seed: 0x{base_seed:016x}  (set FUZZ_SEED to reproduce)  count={count}");
 
     let mut tests = Vec::with_capacity(count);
     for i in 0..count {
-        let name = format!("fuzz_{:03}", i);
-        let seed = base_seed ^ (i as u64).wrapping_mul(0x9E3779B185EBCA87);
+        let per_test_seed = derive_seed(base_seed, i as u64);
+        let name = format!("fuzz_{:03}_seed_{:016x}", i, per_test_seed);
 
         tests.push(Trial::test(name, move || {
-            run_one(seed).map_err(Failed::from)
+            run_one(per_test_seed).map_err(Failed::from)
         }));
     }
 
     libtest_mimic::run(&args, tests).exit();
+}
+
+fn read_base_seed() -> Option<u64> {
+    let raw = env::var("FUZZ_SEED").ok()?;
+    if let Some(hex) = raw.strip_prefix("0x").or_else(|| raw.strip_prefix("0X")) {
+        u64::from_str_radix(hex, 16).ok()
+    } else {
+        raw.parse::<u64>().ok()
+    }
+}
+
+fn random_seed() -> u64 {
+    let mut rng = OsRng;
+    rng.try_next_u64().unwrap()
+}
+
+fn derive_seed(base: u64, idx: u64) -> u64 {
+    splitmix64(base ^ idx.wrapping_mul(0x9E37_79B1_85EB_CA87))
+}
+
+fn splitmix64(mut x: u64) -> u64 {
+    x = x.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    let mut z = x;
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
 }
 
 fn run_one(seed: u64) -> Result<(), String> {
@@ -38,16 +70,18 @@ fn run_one(seed: u64) -> Result<(), String> {
         let exe_mine = tmp_path.join("mine");
         let exe_ref = tmp_path.join("ref");
 
+        // mine: codegen -> cc -> run
         must_success("--codegen", &src_path, codegen(&src_path, &asm_path)?)?;
         must_success("cc(asm)", &asm_path, compile(&asm_path, &exe_mine)?)?;
-        let mine = to_runlog(run_exe(&exe_mine)?);
+        let mine = to_runlog(run_exe(&exe_mine, Duration::from_secs(1))?);
 
+        // reference: cc(src) -> run
         must_success("cc(src)", &src_path, compile(&src_path, &exe_ref)?)?;
-        let reference = to_runlog(run_exe(&exe_ref)?);
+        let reference = to_runlog(run_exe(&exe_ref, Duration::from_secs(1))?);
 
         if mine != reference {
             return Err(format!(
-                "output mismatch:\n mine={mine:?}\n ref={reference:?}"
+                "output mismatch\n  mine={mine:?}\n  ref ={reference:?}"
             ));
         }
         Ok(())
@@ -57,14 +91,17 @@ fn run_one(seed: u64) -> Result<(), String> {
         let msg = persist_failure(&src_path, tmp_path, seed, &e);
         return Err(msg);
     }
+
+    eprintln!("OK seed=0x{seed:016x}");
     Ok(())
 }
 
-#[derive(Serialize, Debug, Clone, PartialEq, Eq)]
+#[derive(serde::Serialize, Debug, Clone, PartialEq, Eq)]
 struct RunLog {
     stdout: String,
     status: i32,
 }
+
 fn to_runlog(out: Output) -> RunLog {
     RunLog {
         stdout: String::from_utf8_lossy(&out.stdout).to_string(),
@@ -89,7 +126,7 @@ fn make_random_c(temp: &Path, seed: u64) -> Result<PathBuf, String> {
         insta_cmd::Command::cargo_bin(env!("CARGO_PKG_NAME")).map_err(|e| e.to_string())?;
     let fuzz_out = bin
         .arg("--fuzz")
-        .env("SEED", seed.to_string())
+        .env("SEED", format!("{seed}"))
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()
@@ -114,27 +151,24 @@ fn compile(src: &Path, exe: &Path) -> Result<Output, String> {
         .map_err(|e| e.to_string())
 }
 
-fn run_exe(exe: &Path) -> Result<Output, String> {
-    let duration = Duration::from_secs(1);
+fn run_exe(exe: &Path, timeout: Duration) -> Result<Output, String> {
     let mut child = StdCommand::new(exe)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| e.to_string())?;
-    let start = std::time::Instant::now();
+    let start = Instant::now();
     loop {
-        match child.try_wait().map_err(|e| e.to_string())? {
-            Some(status) => {
-                let output = child.wait_with_output().map_err(|e| e.to_string())?;
-                return Ok(Output { status, ..output });
-            }
-            None if start.elapsed() > duration => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(format!("program timed out after {:?}", duration));
-            }
-            None => std::thread::sleep(Duration::from_millis(10)),
+        if start.elapsed() > timeout {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(format!("program timed out after {:?}", timeout));
         }
+        if let Some(status) = child.try_wait().map_err(|e| e.to_string())? {
+            let output = child.wait_with_output().map_err(|e| e.to_string())?;
+            return Ok(Output { status, ..output });
+        }
+        std::thread::sleep(Duration::from_millis(10));
     }
 }
 
@@ -153,10 +187,9 @@ fn must_success(tag: &str, target: &Path, out: Output) -> Result<(), String> {
 }
 
 fn persist_failure(src: &Path, tmp: &Path, seed: u64, msg: &str) -> String {
-    let outdir =
-        PathBuf::from(std::env::var("CARGO_TARGET_DIR").unwrap_or_else(|_| "target".into()))
-            .join("fuzz-failures")
-            .join(format!("{seed:016x}"));
+    let outdir = PathBuf::from(env::var("CARGO_TARGET_DIR").unwrap_or_else(|_| "target".into()))
+        .join("fuzz-failures")
+        .join(format!("{seed:016x}"));
     let _ = fs::create_dir_all(&outdir);
     let _ = fs::copy(src, outdir.join("prog.c"));
     for name in ["a.S", "mine", "ref"] {
