@@ -4,7 +4,6 @@ pub(crate) mod codegen;
 pub(crate) mod fuzzing;
 pub(crate) mod parse;
 pub(crate) mod semantic;
-pub(crate) mod structs;
 pub(crate) mod tacky;
 pub(crate) mod tokenize;
 

@@ -1,7 +1,7 @@
 use thiserror::Error;
 
 use crate::{
-    structs,
+    semantic::structs,
     tokenize::{Token, TokenKind},
 };
 use std::convert::TryFrom;

@@ -1,6 +1,7 @@
 #![allow(clippy::result_large_err)]
 pub(crate) mod loop_label;
 pub(crate) mod struct_label;
+pub(crate) mod structs;
 
 use std::collections::BTreeMap;
 
@@ -11,7 +12,7 @@ use crate::{
         Const, Decl, DeclKind, Expr, ExprKind, ForInit, FunctionDecl, ParameterDecl, Program, Stmt,
         StmtKind, StorageClass, StructDeclaration, Type, VariableDecl,
     },
-    structs::{self, StructLayout, StructMemberLayout},
+    semantic::structs::{StructLayout, StructMemberLayout},
     tokenize::TokenKind,
 };
 
@@ -99,6 +100,7 @@ pub(crate) struct FunctionSignature {
     param_types: Vec<Type>,
 }
 
+#[derive(Default)]
 pub(crate) struct SemanticAnalyzer {
     counter: usize,
     scopes: Vec<BTreeMap<String, Symbol>>,
@@ -1565,18 +1567,5 @@ impl SemanticAnalyzer {
         let name = format!("{base}{}", self.counter);
         self.counter += 1;
         name
-    }
-}
-
-impl Default for SemanticAnalyzer {
-    fn default() -> Self {
-        Self {
-            counter: 0,
-            scopes: Vec::new(),
-            functions: BTreeMap::new(),
-            current_return_type: None,
-            struct_defs: BTreeMap::new(),
-            struct_layouts: BTreeMap::new(),
-        }
     }
 }
