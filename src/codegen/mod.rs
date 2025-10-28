@@ -318,6 +318,12 @@ impl<W: Write> Codegen<W> {
                         vars.insert(dst.clone());
                     }
                 }
+                Instruction::CopyFromOffset { src, dst, .. } => {
+                    Self::collect_value(&mut vars, dst);
+                    if self.value_types.contains_key(src) {
+                        vars.insert(src.clone());
+                    }
+                }
                 Instruction::FunCall { args, dst, .. } => {
                     for arg in args {
                         Self::collect_value(&mut vars, arg);
@@ -463,6 +469,9 @@ impl<W: Write> Codegen<W> {
             } => self.emit_add_ptr(ptr, index, *scale, dst),
             Instruction::CopyToOffset { src, dst, offset } => {
                 self.emit_copy_to_offset(src, dst, *offset)
+            }
+            Instruction::CopyFromOffset { .. } => {
+                todo!("CopyFromOffset lowering is not implemented yet");
             }
             Instruction::SignExtend { src, dst } => self.emit_sign_extend(src, dst),
             Instruction::ZeroExtend { src, dst } => self.emit_zero_extend(src, dst),

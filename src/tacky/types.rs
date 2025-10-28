@@ -138,6 +138,11 @@ pub(crate) enum Instruction {
         dst: String,
         offset: i64,
     },
+    CopyFromOffset {
+        src: String,
+        offset: i64,
+        dst: Value,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
