@@ -17,7 +17,12 @@ insta = { version = "1.43.2", features = ["yaml", "glob"] }
 insta-cmd = "0.6.0"
 serde = { version = "1.0.228", features = ["derive"] }
 tempfile = "3.23.0"
+libtest-mimic = "0.8"
 
 [[test]]
 name = "cli"
+harness = false
+
+[[test]]
+name = "fuzz"
 harness = false
