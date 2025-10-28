@@ -15,7 +15,8 @@ use clap::Parser as _;
 
 use {
     cli::Args, codegen::Codegen, parse::Parser, semantic::SemanticAnalyzer,
-    semantic::loop_label::LoopLabeler, tacky::TackyGen, tokenize::tokenize,
+    semantic::loop_label::LoopLabeler, semantic::struct_label::StructLabeler, tacky::TackyGen,
+    tokenize::tokenize,
 };
 
 fn main() -> anyhow::Result<(), Error> {
@@ -63,7 +64,11 @@ fn main() -> anyhow::Result<(), Error> {
         if args.verbose {
             eprintln!("AST: {:?}", &ast);
         }
-        let analyzed_ast = SemanticAnalyzer::new().analyze_program(ast)?;
+        let struct_checked_ast = StructLabeler::new().label_program(ast)?;
+        if args.verbose {
+            eprintln!("Struct Checked AST: {:?}", &struct_checked_ast);
+        }
+        let analyzed_ast = SemanticAnalyzer::new().analyze_program(struct_checked_ast)?;
         if args.verbose {
             eprintln!("Analyzed AST: {:?}", &analyzed_ast);
         }

@@ -1419,9 +1419,10 @@ impl<W: Write> Codegen<W> {
             Type::Int | Type::UInt => Ok("movl"),
             Type::Long | Type::ULong | Type::Void | Type::Pointer(_) => Ok("movq"),
             Type::Double => Err(CodegenError::MovUnsupported(ty.clone())),
-            Type::FunType(_, _) | Type::Array(_, _) | Type::IncompleteArray(_) | Type::Struct(_) => {
-                Err(CodegenError::MovUnsupported(ty.clone()))
-            }
+            Type::FunType(_, _)
+            | Type::Array(_, _)
+            | Type::IncompleteArray(_)
+            | Type::Struct(_) => Err(CodegenError::MovUnsupported(ty.clone())),
         }
     }
 

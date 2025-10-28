@@ -1,8 +1,8 @@
 use std::fmt;
 
 use crate::parse::{
-    Decl, DeclKind, ExprKind, ForInit, FunctionDecl, MemberDeclaration, Program,
-    StructDeclaration, Stmt, StmtKind, StorageClass, VariableDecl,
+    Decl, DeclKind, ExprKind, ForInit, FunctionDecl, MemberDeclaration, Program, Stmt, StmtKind,
+    StorageClass, StructDeclaration, VariableDecl,
 };
 
 impl fmt::Display for Program {

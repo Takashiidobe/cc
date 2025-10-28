@@ -82,9 +82,7 @@ impl Reg {
             | Type::FunType(_, _)
             | Type::Array(_, _)
             | Type::IncompleteArray(_)
-            | Type::Struct(_) => {
-                Err(CodegenError::GprRequestedFor(ty.clone()))
-            }
+            | Type::Struct(_) => Err(CodegenError::GprRequestedFor(ty.clone())),
         }
     }
 

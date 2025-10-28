@@ -1,5 +1,6 @@
 #![allow(clippy::result_large_err)]
 pub(crate) mod loop_label;
+pub(crate) mod struct_label;
 
 use std::collections::BTreeMap;
 
@@ -7,8 +8,8 @@ use thiserror::Error;
 
 use crate::{
     parse::{
-        Const, Decl, DeclKind, Expr, ExprKind, ForInit, FunctionDecl, ParameterDecl, Program,
-        StructDeclaration, Stmt, StmtKind, StorageClass, Type, VariableDecl,
+        Const, Decl, DeclKind, Expr, ExprKind, ForInit, FunctionDecl, ParameterDecl, Program, Stmt,
+        StmtKind, StorageClass, StructDeclaration, Type, VariableDecl,
     },
     tokenize::TokenKind,
 };
