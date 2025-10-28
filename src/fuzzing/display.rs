@@ -166,6 +166,18 @@ impl fmt::Display for ExprKind {
             ExprKind::Not(expr) => format!("!{}", expr.kind),
             ExprKind::AddrOf(expr) => format!("&{}", expr.kind),
             ExprKind::Dereference(expr) => format!("*{}", expr.kind),
+            ExprKind::Member {
+                base,
+                member,
+                offset: _,
+                is_arrow,
+            } => {
+                if *is_arrow {
+                    format!("{}->{}", base.kind, member)
+                } else {
+                    format!("{}.{}", base.kind, member)
+                }
+            }
             ExprKind::BitAnd(lhs, rhs) => {
                 format!("{} & {}", lhs.kind, rhs.kind)
             }

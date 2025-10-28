@@ -198,6 +198,7 @@ impl StructLabeler {
             | ExprKind::PreDecrement(inner)
             | ExprKind::PostIncrement(inner)
             | ExprKind::PostDecrement(inner) => self.visit_expr(inner),
+            ExprKind::Member { base, .. } => self.visit_expr(base),
             ExprKind::Conditional(cond, then_expr, else_expr) => {
                 self.visit_expr(cond)?;
                 self.visit_expr(then_expr)?;

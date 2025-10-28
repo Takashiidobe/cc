@@ -77,6 +77,8 @@ pub(crate) enum CodegenError {
 
     #[error("CopyToOffset not supported for type {0:?}")]
     CopyToOffsetUnsupported(Type),
+    #[error("CopyFromOffset not supported for type {0:?}")]
+    CopyFromOffsetUnsupported(Type),
 
     #[error("unknown value type")]
     UnknownValueType,

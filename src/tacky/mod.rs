@@ -2,7 +2,6 @@ mod error;
 mod types;
 
 use std::collections::BTreeMap;
-use std::convert::TryFrom;
 
 pub(crate) use crate::{
     parse::{
@@ -768,6 +767,7 @@ impl TackyGen {
                 match decl.storage_class {
                     None => {
                         if decl.is_definition {
+                            self.register_local(&decl.name, &decl.r#type);
                             let mut handled_init = false;
                             if let (Type::Array(elem, size), Some(init_expr)) =
                                 (&decl.r#type, &decl.init)
@@ -788,9 +788,10 @@ impl TackyGen {
                                                     "element type is verified as char-compatible"
                                                 ),
                                             };
+                                            let base = self.value_for_variable(&decl.name);
                                             instructions.push(Instruction::CopyToOffset {
                                                 src: Value::Constant(const_value),
-                                                dst: decl.name.clone(),
+                                                dst: base,
                                                 offset,
                                             });
                                         }
@@ -812,7 +813,6 @@ impl TackyGen {
                                     dst: Value::Var(decl.name.clone()),
                                 });
                             }
-                            self.register_local(&decl.name, &decl.r#type);
                         }
                     }
                     Some(StorageClass::Extern) => { /* no code */ }
@@ -880,28 +880,35 @@ impl TackyGen {
                 self.convert_value(ptr_value, ptr_type, result_type.clone(), instructions)
             }
             ExprKind::Dereference(inner) => {
-                if let Some(value) =
-                    self.try_struct_deref(inner.as_ref(), &result_type, instructions)?
-                {
-                    value
-                } else {
-                    let pointer_type = Type::Pointer(Box::new(result_type.clone()));
-                    let ptr_value = self.gen_expr(inner, instructions)?;
-                    let ptr = self.convert_value(
-                        ptr_value,
-                        inner.r#type.clone(),
-                        pointer_type,
-                        instructions,
-                    );
-                    let tmp = self.fresh_tmp();
-                    self.record_temp(&tmp, &result_type);
-                    let dst = Value::Var(tmp.clone());
-                    instructions.push(Instruction::Load {
-                        src_ptr: ptr,
-                        dst: dst.clone(),
-                    });
-                    dst
-                }
+                let pointer_type = Type::Pointer(Box::new(result_type.clone()));
+                let ptr_value = self.gen_expr(inner, instructions)?;
+                let ptr =
+                    self.convert_value(ptr_value, inner.r#type.clone(), pointer_type, instructions);
+                let tmp = self.fresh_tmp();
+                self.record_temp(&tmp, &result_type);
+                let dst = Value::Var(tmp.clone());
+                instructions.push(Instruction::Load {
+                    src_ptr: ptr,
+                    dst: dst.clone(),
+                });
+                dst
+            }
+            ExprKind::Member {
+                base,
+                offset,
+                is_arrow,
+                ..
+            } => {
+                let base_ptr = self.member_base_pointer(base, *is_arrow, instructions)?;
+                let tmp = self.fresh_tmp();
+                self.record_temp(&tmp, &result_type);
+                let dst = Value::Var(tmp.clone());
+                instructions.push(Instruction::CopyFromOffset {
+                    src: base_ptr,
+                    offset: *offset as i64,
+                    dst: dst.clone(),
+                });
+                dst
             }
             ExprKind::Add(lhs, rhs) => self.gen_add_expr(lhs, rhs, &result_type, instructions)?,
             ExprKind::Sub(lhs, rhs) => self.gen_sub_expr(lhs, rhs, &result_type, instructions)?,
@@ -1103,6 +1110,12 @@ impl TackyGen {
                 let value = self.gen_expr(inner, instructions)?;
                 Ok((value, inner.r#type.clone()))
             }
+            ExprKind::Member {
+                base,
+                offset,
+                is_arrow,
+                ..
+            } => self.member_pointer(base, *offset, *is_arrow, &expr.r#type, instructions),
             _ => Err(IRError::BadLValueAddressOf),
         }
     }
@@ -1146,6 +1159,42 @@ impl TackyGen {
         } else {
             self.convert_value(dst, return_type, result_type.clone(), instructions)
         })
+    }
+
+    fn member_base_pointer(
+        &mut self,
+        base: &Expr,
+        is_arrow: bool,
+        instructions: &mut Vec<Instruction>,
+    ) -> IResult<Value> {
+        if is_arrow {
+            self.gen_expr(base, instructions)
+        } else {
+            let (ptr, _) = self.gen_lvalue_address(base, instructions)?;
+            Ok(ptr)
+        }
+    }
+
+    fn member_pointer(
+        &mut self,
+        base: &Expr,
+        offset: usize,
+        is_arrow: bool,
+        member_type: &Type,
+        instructions: &mut Vec<Instruction>,
+    ) -> IResult<(Value, Type)> {
+        let struct_ptr = self.member_base_pointer(base, is_arrow, instructions)?;
+        let member_ptr_type = Type::Pointer(Box::new(member_type.clone()));
+        let tmp = self.fresh_tmp();
+        self.record_temp(&tmp, &member_ptr_type);
+        let dst = Value::Var(tmp.clone());
+        instructions.push(Instruction::AddPtr {
+            ptr: struct_ptr,
+            index: Value::Constant(Const::Long(offset as i64)),
+            scale: 1,
+            dst: dst.clone(),
+        });
+        Ok((dst, member_ptr_type))
     }
 
     fn gen_unary_expr(
@@ -1313,124 +1362,35 @@ impl TackyGen {
         Ok(dst)
     }
 
-    fn try_struct_deref(
-        &mut self,
-        ptr_expr: &Expr,
-        result_type: &Type,
-        instructions: &mut Vec<Instruction>,
-    ) -> IResult<Option<Value>> {
-        if let Some((base_expr, offset)) = self.extract_struct_access(ptr_expr) {
-            let base_value = self.gen_expr(base_expr, instructions)?;
-            let base_name =
-                self.materialize_identifier(base_value, base_expr.r#type.clone(), instructions);
-            let tmp = self.fresh_tmp();
-            self.record_temp(&tmp, result_type);
-            let dst = Value::Var(tmp.clone());
-            instructions.push(Instruction::CopyFromOffset {
-                src: base_name,
-                offset,
-                dst: dst.clone(),
-            });
-            Ok(Some(dst))
-        } else {
-            Ok(None)
-        }
-    }
-
     fn try_struct_assignment(
         &mut self,
         lhs: &Expr,
         rhs: &Expr,
         instructions: &mut Vec<Instruction>,
     ) -> IResult<Option<Value>> {
-        if let ExprKind::Dereference(ptr_expr) = &lhs.kind {
-            if let Some((base_expr, offset)) = self.extract_struct_access(ptr_expr.as_ref()) {
-                let base_value = self.gen_expr(base_expr, instructions)?;
-                let base_name =
-                    self.materialize_identifier(base_value, base_expr.r#type.clone(), instructions);
-                let rhs_value = self.gen_expr(rhs, instructions)?;
-                let converted_rhs = self.convert_value(
-                    rhs_value,
-                    rhs.r#type.clone(),
-                    lhs.r#type.clone(),
-                    instructions,
-                );
-                instructions.push(Instruction::CopyToOffset {
-                    src: converted_rhs.clone(),
-                    dst: base_name,
-                    offset,
-                });
-                return Ok(Some(converted_rhs));
-            }
+        if let ExprKind::Member {
+            base,
+            offset,
+            is_arrow,
+            ..
+        } = &lhs.kind
+        {
+            let base_ptr = self.member_base_pointer(base, *is_arrow, instructions)?;
+            let rhs_value = self.gen_expr(rhs, instructions)?;
+            let converted_rhs = self.convert_value(
+                rhs_value,
+                rhs.r#type.clone(),
+                lhs.r#type.clone(),
+                instructions,
+            );
+            instructions.push(Instruction::CopyToOffset {
+                src: converted_rhs.clone(),
+                dst: base_ptr,
+                offset: *offset as i64,
+            });
+            return Ok(Some(converted_rhs));
         }
         Ok(None)
-    }
-
-    fn extract_struct_access<'a>(&self, expr: &'a Expr) -> Option<(&'a Expr, i64)> {
-        match &expr.kind {
-            ExprKind::Add(lhs, rhs) => {
-                if let Some(offset) = Self::const_offset(rhs.as_ref()) {
-                    Some((lhs.as_ref(), offset))
-                } else if let Some(offset) = Self::const_offset(lhs.as_ref()) {
-                    Some((rhs.as_ref(), offset))
-                } else {
-                    None
-                }
-            }
-            ExprKind::Sub(lhs, rhs) => {
-                let offset = Self::const_offset(rhs.as_ref())?;
-                Some((lhs.as_ref(), -offset))
-            }
-            ExprKind::Cast(_, inner) => self.extract_struct_access(inner.as_ref()),
-            _ => None,
-        }
-    }
-
-    fn const_offset(expr: &Expr) -> Option<i64> {
-        match &expr.kind {
-            ExprKind::Constant(Const::Char(n)) => Some(*n as i64),
-            ExprKind::Constant(Const::UChar(n)) => Some(*n as i64),
-            ExprKind::Constant(Const::Short(n)) => Some(*n as i64),
-            ExprKind::Constant(Const::UShort(n)) => Some(*n as i64),
-            ExprKind::Constant(Const::Int(n)) => Some(*n as i64),
-            ExprKind::Constant(Const::UInt(n)) => Some(*n as i64),
-            ExprKind::Constant(Const::Long(n)) => Some(*n),
-            ExprKind::Constant(Const::ULong(n)) => i64::try_from(*n).ok(),
-            ExprKind::Constant(Const::Double(_)) => None,
-            ExprKind::Cast(_, inner) => Self::const_offset(inner.as_ref()),
-            _ => None,
-        }
-    }
-
-    fn materialize_identifier(
-        &mut self,
-        value: Value,
-        ty: Type,
-        instructions: &mut Vec<Instruction>,
-    ) -> String {
-        match value {
-            Value::Var(name) => name,
-            Value::Global(name) => {
-                let tmp = self.fresh_tmp();
-                self.record_temp(&tmp, &ty);
-                let dst = Value::Var(tmp.clone());
-                instructions.push(Instruction::Copy {
-                    src: Value::Global(name),
-                    dst: dst.clone(),
-                });
-                tmp
-            }
-            Value::Constant(constant) => {
-                let tmp = self.fresh_tmp();
-                self.record_temp(&tmp, &ty);
-                let dst = Value::Var(tmp.clone());
-                instructions.push(Instruction::Copy {
-                    src: Value::Constant(constant),
-                    dst: dst.clone(),
-                });
-                tmp
-            }
-        }
     }
 
     fn gen_pointer_difference(

@@ -11,6 +11,7 @@ use crate::{
         Const, Decl, DeclKind, Expr, ExprKind, ForInit, FunctionDecl, ParameterDecl, Program, Stmt,
         StmtKind, StorageClass, StructDeclaration, Type, VariableDecl,
     },
+    structs::{self, StructLayout, StructMemberLayout},
     tokenize::TokenKind,
 };
 
@@ -75,6 +76,15 @@ pub(crate) enum SemanticError {
 
     #[error("{0} requires lvalue")]
     LValueRequired(&'static str),
+
+    #[error("struct '{0}' is incomplete")]
+    IncompleteStruct(String),
+
+    #[error("struct '{0}' has no member named '{1}'")]
+    UnknownStructMember(String, String),
+
+    #[error("member access requires struct type")]
+    MemberAccessOnNonStruct,
 }
 
 #[derive(Clone)]
@@ -89,12 +99,13 @@ pub(crate) struct FunctionSignature {
     param_types: Vec<Type>,
 }
 
-#[derive(Default)]
 pub(crate) struct SemanticAnalyzer {
     counter: usize,
     scopes: Vec<BTreeMap<String, Symbol>>,
     functions: BTreeMap<String, FunctionSignature>,
     current_return_type: Option<Type>,
+    struct_defs: BTreeMap<String, StructDeclaration>,
+    struct_layouts: BTreeMap<String, StructLayout>,
 }
 
 impl SemanticAnalyzer {
@@ -104,6 +115,9 @@ impl SemanticAnalyzer {
 
     pub(crate) fn analyze_program(mut self, program: Program) -> Result<Program, SemanticError> {
         self.enter_scope();
+
+        self.collect_struct_definitions(&program)?;
+        self.initialize_struct_layouts()?;
 
         for decl in &program.0 {
             match &decl.kind {
@@ -141,6 +155,121 @@ impl SemanticAnalyzer {
             .collect::<Result<Vec<_>, _>>()?;
         self.exit_scope();
         Ok(Program(decls))
+    }
+
+    fn collect_struct_definitions(&mut self, program: &Program) -> Result<(), SemanticError> {
+        self.struct_defs.clear();
+        for decl in &program.0 {
+            if let DeclKind::Struct(struct_decl) = &decl.kind {
+                if !struct_decl.members.is_empty() {
+                    self.struct_defs
+                        .insert(struct_decl.tag.clone(), struct_decl.clone());
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn initialize_struct_layouts(&mut self) -> Result<(), SemanticError> {
+        self.struct_layouts.clear();
+        structs::clear_struct_layouts();
+        let tags: Vec<String> = self.struct_defs.keys().cloned().collect();
+        for tag in tags {
+            let layout = self.struct_layout(&tag)?;
+            structs::set_struct_layout(tag, layout);
+        }
+        Ok(())
+    }
+
+    fn struct_layout(&mut self, tag: &str) -> Result<StructLayout, SemanticError> {
+        if let Some(layout) = self.struct_layouts.get(tag) {
+            return Ok(layout.clone());
+        }
+
+        let members_decl = {
+            let decl = self
+                .struct_defs
+                .get(tag)
+                .ok_or_else(|| SemanticError::IncompleteStruct(tag.to_string()))?;
+            decl.members.clone()
+        };
+
+        let mut offset = 0usize;
+        let mut max_align = 1usize;
+        let mut members = BTreeMap::new();
+
+        for member in members_decl {
+            let (size, align) = self.type_size_align(&member.member_type)?;
+            if align == 0 {
+                return Err(SemanticError::Unsupported(format!(
+                    "type `{}` has zero alignment",
+                    member.member_type
+                )));
+            }
+            if offset % align != 0 {
+                offset += align - (offset % align);
+            }
+            members.insert(
+                member.member_name.clone(),
+                StructMemberLayout {
+                    offset,
+                    ty: member.member_type.clone(),
+                },
+            );
+            offset += size;
+            max_align = max_align.max(align);
+        }
+
+        if max_align > 0 && offset % max_align != 0 {
+            offset += max_align - (offset % max_align);
+        }
+
+        let layout = StructLayout {
+            size: offset,
+            align: max_align.max(1),
+            members,
+        };
+        self.struct_layouts.insert(tag.to_string(), layout.clone());
+        Ok(layout)
+    }
+
+    fn type_size_align(&mut self, ty: &Type) -> Result<(usize, usize), SemanticError> {
+        match ty {
+            Type::Struct(tag) => {
+                let layout = self.struct_layout(tag)?;
+                Ok((layout.size, layout.align))
+            }
+            Type::Array(inner, len) => {
+                let (size, align) = self.type_size_align(inner)?;
+                Ok((size * len, align))
+            }
+            Type::IncompleteArray(inner) => {
+                let (_, align) = self.type_size_align(inner)?;
+                Err(SemanticError::Unsupported(format!(
+                    "incomplete array type `{}` has no size",
+                    ty
+                )))
+            }
+            Type::Pointer(_) => Ok((8, 8)),
+            Type::FunType(_, _) => Err(SemanticError::Unsupported(format!(
+                "cannot determine size of function type `{}`",
+                ty
+            ))),
+            _ => Ok((ty.byte_size(), ty.byte_align())),
+        }
+    }
+
+    fn struct_member_layout(
+        &mut self,
+        tag: &str,
+        member: &str,
+    ) -> Result<StructMemberLayout, SemanticError> {
+        let layout = self.struct_layout(tag)?;
+        layout
+            .members
+            .get(member)
+            .cloned()
+            .ok_or_else(|| SemanticError::UnknownStructMember(tag.to_string(), member.to_string()))
     }
 
     fn analyze_decl(&mut self, decl: Decl) -> Result<Decl, SemanticError> {
@@ -664,6 +793,53 @@ impl SemanticAnalyzer {
                     r#type: ty,
                 }
             }
+            ExprKind::Member {
+                base,
+                member,
+                offset: _,
+                is_arrow,
+            } => {
+                let (base_expr, struct_tag) = if is_arrow {
+                    let analyzed_base = self.analyze_expr(*base)?;
+                    match analyzed_base.r#type.clone() {
+                        Type::Pointer(inner) => match *inner {
+                            Type::Struct(tag) => (analyzed_base, tag),
+                            other => {
+                                return Err(SemanticError::Unsupported(format!(
+                                    "operator '->' requires pointer to struct, found `{other}`"
+                                )));
+                            }
+                        },
+                        other => {
+                            return Err(SemanticError::Unsupported(format!(
+                                "operator '->' requires pointer to struct, found `{other}`"
+                            )));
+                        }
+                    }
+                } else {
+                    let analyzed_base = self.analyze_expr_no_decay(*base)?;
+                    self.ensure_lvalue(&analyzed_base, "member access base")?;
+                    match analyzed_base.r#type.clone() {
+                        Type::Struct(tag) => (analyzed_base, tag),
+                        _ => return Err(SemanticError::MemberAccessOnNonStruct),
+                    }
+                };
+
+                let member_layout = self.struct_member_layout(&struct_tag, &member)?;
+                let member_type = member_layout.ty.clone();
+                Expr {
+                    kind: ExprKind::Member {
+                        base: Box::new(base_expr),
+                        member,
+                        offset: member_layout.offset,
+                        is_arrow,
+                    },
+                    start,
+                    end,
+                    source,
+                    r#type: member_type,
+                }
+            }
             ExprKind::Conditional(cond, then_expr, else_expr) => {
                 let cond = self.analyze_expr(*cond)?;
                 self.ensure_condition_type(&cond.r#type, "conditional condition")?;
@@ -890,7 +1066,7 @@ impl SemanticAnalyzer {
 
     fn ensure_lvalue(&self, expr: &Expr, context: &'static str) -> Result<(), SemanticError> {
         match &expr.kind {
-            ExprKind::Var(_) | ExprKind::Dereference(_) => Ok(()),
+            ExprKind::Var(_) | ExprKind::Dereference(_) | ExprKind::Member { .. } => Ok(()),
             _ => Err(SemanticError::LValueRequired(context)),
         }
     }
@@ -1389,5 +1565,18 @@ impl SemanticAnalyzer {
         let name = format!("{base}{}", self.counter);
         self.counter += 1;
         name
+    }
+}
+
+impl Default for SemanticAnalyzer {
+    fn default() -> Self {
+        Self {
+            counter: 0,
+            scopes: Vec::new(),
+            functions: BTreeMap::new(),
+            current_return_type: None,
+            struct_defs: BTreeMap::new(),
+            struct_layouts: BTreeMap::new(),
+        }
     }
 }

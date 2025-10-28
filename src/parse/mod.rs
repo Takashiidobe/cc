@@ -1,6 +1,9 @@
 use thiserror::Error;
 
-use crate::tokenize::{Token, TokenKind};
+use crate::{
+    structs,
+    tokenize::{Token, TokenKind},
+};
 use std::convert::TryFrom;
 use std::{fmt, mem};
 
@@ -126,6 +129,12 @@ pub(crate) enum ExprKind {
 
     AddrOf(Box<Expr>),
     Dereference(Box<Expr>),
+    Member {
+        base: Box<Expr>,
+        member: String,
+        offset: usize,
+        is_arrow: bool,
+    },
 
     BitAnd(Box<Expr>, Box<Expr>),
     Xor(Box<Expr>, Box<Expr>),
@@ -389,7 +398,9 @@ impl Type {
             Type::Array(inner, len) => len * inner.byte_size(),
             Type::IncompleteArray(t) => t.byte_size(),
             Type::Void => 1,
-            Type::Struct(_) => todo!("struct size not implemented"),
+            Type::Struct(tag) => structs::get_struct_layout(tag)
+                .map(|layout| layout.size)
+                .unwrap_or_else(|| panic!("struct '{tag}' layout not available")),
             Type::FunType(_, _) => {
                 panic!("No size");
             }
@@ -407,7 +418,9 @@ impl Type {
             Type::Pointer(_) => 8,
             Type::Array(inner, _) => inner.byte_align(),
             Type::IncompleteArray(t) => t.byte_align(),
-            Type::Struct(_) => todo!("struct alignment not implemented"),
+            Type::Struct(tag) => structs::get_struct_layout(tag)
+                .map(|layout| layout.align)
+                .unwrap_or_else(|| panic!("struct '{tag}' layout not available")),
             Type::FunType(_, _) => {
                 panic!("No size");
             }
@@ -2031,6 +2044,33 @@ impl Parser {
                     let source = self.source_slice(start, end);
                     node = Expr {
                         kind: ExprKind::FunctionCall(func_name, args),
+                        start,
+                        end,
+                        source,
+                        r#type: Type::Int,
+                    };
+                }
+                TokenKind::Period | TokenKind::Arrow => {
+                    let is_arrow = matches!(token.kind, TokenKind::Arrow);
+                    self.advance()?;
+                    let member_token = self.peek()?;
+                    let member_name = match member_token.kind.clone() {
+                        TokenKind::Identifier(name) => {
+                            self.advance()?;
+                            name
+                        }
+                        _ => return Err(ParserError::ExpectedIdentifier),
+                    };
+                    let start = node.start;
+                    let end = member_token.end;
+                    let source = self.source_slice(start, end);
+                    node = Expr {
+                        kind: ExprKind::Member {
+                            base: Box::new(node),
+                            member: member_name,
+                            offset: 0,
+                            is_arrow,
+                        },
                         start,
                         end,
                         source,

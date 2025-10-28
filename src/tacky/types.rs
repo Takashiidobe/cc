@@ -135,11 +135,11 @@ pub(crate) enum Instruction {
     },
     CopyToOffset {
         src: Value,
-        dst: String,
+        dst: Value,
         offset: i64,
     },
     CopyFromOffset {
-        src: String,
+        src: Value,
         offset: i64,
         dst: Value,
     },

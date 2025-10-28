@@ -314,15 +314,11 @@ impl<W: Write> Codegen<W> {
                 }
                 Instruction::CopyToOffset { src, dst, .. } => {
                     Self::collect_value(&mut vars, src);
-                    if self.value_types.contains_key(dst) {
-                        vars.insert(dst.clone());
-                    }
+                    Self::collect_value(&mut vars, dst);
                 }
                 Instruction::CopyFromOffset { src, dst, .. } => {
+                    Self::collect_value(&mut vars, src);
                     Self::collect_value(&mut vars, dst);
-                    if self.value_types.contains_key(src) {
-                        vars.insert(src.clone());
-                    }
                 }
                 Instruction::FunCall { args, dst, .. } => {
                     for arg in args {
@@ -470,8 +466,8 @@ impl<W: Write> Codegen<W> {
             Instruction::CopyToOffset { src, dst, offset } => {
                 self.emit_copy_to_offset(src, dst, *offset)
             }
-            Instruction::CopyFromOffset { .. } => {
-                todo!("CopyFromOffset lowering is not implemented yet");
+            Instruction::CopyFromOffset { src, offset, dst } => {
+                self.emit_copy_from_offset(src, *offset, dst)
             }
             Instruction::SignExtend { src, dst } => self.emit_sign_extend(src, dst),
             Instruction::ZeroExtend { src, dst } => self.emit_zero_extend(src, dst),
@@ -943,45 +939,134 @@ impl<W: Write> Codegen<W> {
         self.store_reg_into_value(Reg::R11, dst)
     }
 
-    fn emit_copy_to_offset(&mut self, src: &Value, dst: &str, offset: i64) -> Result<()> {
-        let addr = if let Some(base) = self.stack_map.get(dst) {
-            format!("{}(%rbp)", base + offset)
+    fn emit_copy_to_offset(&mut self, src: &Value, dst: &Value, offset: i64) -> Result<()> {
+        let dst_ty = self.value_type(dst)?;
+        if matches!(dst_ty, Type::Pointer(_)) {
+            self.load_value_into_reg(dst, Reg::R11)?;
+            let addr = Self::format_reg_offset(Reg::R11, offset);
+            self.store_value_to_addr(src, &addr)
         } else {
-            self.static_address(dst, offset)
-        };
-        let ty = self.value_type(src)?;
+            let addr = match dst {
+                Value::Var(name) => {
+                    let base = *self
+                        .stack_map
+                        .get(name)
+                        .ok_or_else(|| CodegenError::UndefinedStackSlot(name.clone()))?;
+                    Self::stack_address(base + offset)
+                }
+                Value::Global(name) => self.static_address(name, offset),
+                Value::Constant(_) => return Err(CodegenError::CannotTakeAddressOfConstant),
+            };
+            self.store_value_to_addr(src, &addr)
+        }
+    }
 
+    fn emit_copy_from_offset(&mut self, src: &Value, offset: i64, dst: &Value) -> Result<()> {
+        if matches!(dst, Value::Constant(_)) {
+            return Err(CodegenError::CopyDestCannotBeConstant);
+        }
+
+        let src_ty = self.value_type(src)?;
+        if matches!(src_ty, Type::Pointer(_)) {
+            self.load_value_into_reg(src, Reg::R11)?;
+            let addr = Self::format_reg_offset(Reg::R11, offset);
+            self.load_value_from_addr(&addr, dst)
+        } else {
+            let addr = match src {
+                Value::Var(name) => {
+                    let base = *self
+                        .stack_map
+                        .get(name)
+                        .ok_or_else(|| CodegenError::UndefinedStackSlot(name.clone()))?;
+                    Self::stack_address(base + offset)
+                }
+                Value::Global(name) => self.static_address(name, offset),
+                Value::Constant(_) => return Err(CodegenError::CannotTakeAddressOfConstant),
+            };
+            self.load_value_from_addr(&addr, dst)
+        }
+    }
+
+    fn store_value_to_addr(&mut self, src: &Value, addr: &str) -> Result<()> {
+        let ty = self.value_type(src)?;
         match ty {
             Type::Double => {
                 self.load_value_into_xmm(src, 0)?;
                 writeln!(self.buf, "  movsd {}, {}", Self::xmm_name(0)?, addr)?;
+                Ok(())
             }
             Type::Char | Type::SChar | Type::UChar => {
-                self.load_value_into_reg(src, Reg::R11)?;
-                writeln!(self.buf, "  movb {}, {}", Reg::R11.reg_name8(), addr)?;
+                self.load_value_into_reg(src, Reg::R10)?;
+                writeln!(self.buf, "  movb {}, {}", Reg::R10.reg_name8(), addr)?;
+                Ok(())
             }
             Type::Short | Type::UShort => {
-                self.load_value_into_reg(src, Reg::R11)?;
-                writeln!(self.buf, "  movw {}, {}", Reg::R11.reg_name16(), addr)?;
+                self.load_value_into_reg(src, Reg::R10)?;
+                writeln!(self.buf, "  movw {}, {}", Reg::R10.reg_name16(), addr)?;
+                Ok(())
             }
             Type::Int | Type::UInt => {
-                self.load_value_into_reg(src, Reg::R11)?;
-                writeln!(self.buf, "  movl {}, {}", Reg::R11.reg_name32(), addr)?;
+                self.load_value_into_reg(src, Reg::R10)?;
+                writeln!(self.buf, "  movl {}, {}", Reg::R10.reg_name32(), addr)?;
+                Ok(())
             }
             Type::Long | Type::ULong | Type::Pointer(_) => {
-                self.load_value_into_reg(src, Reg::R11)?;
-                writeln!(self.buf, "  movq {}, {}", Reg::R11.reg_name64(), addr)?;
+                self.load_value_into_reg(src, Reg::R10)?;
+                writeln!(self.buf, "  movq {}, {}", Reg::R10.reg_name64(), addr)?;
+                Ok(())
             }
             Type::Void
             | Type::FunType(_, _)
             | Type::Array(_, _)
             | Type::IncompleteArray(_)
-            | Type::Struct(_) => {
-                return Err(CodegenError::CopyToOffsetUnsupported(ty));
-            }
+            | Type::Struct(_) => Err(CodegenError::CopyToOffsetUnsupported(ty)),
         }
+    }
 
-        Ok(())
+    fn load_value_from_addr(&mut self, addr: &str, dst: &Value) -> Result<()> {
+        let ty = self.value_type(dst)?;
+        match ty {
+            Type::Double => {
+                writeln!(self.buf, "  movsd {}, {}", addr, Self::xmm_name(0)?)?;
+                self.store_xmm_into_value(0, dst)
+            }
+            Type::Char
+            | Type::SChar
+            | Type::UChar
+            | Type::Short
+            | Type::UShort
+            | Type::Int
+            | Type::UInt
+            | Type::Long
+            | Type::ULong
+            | Type::Void
+            | Type::Pointer(_) => {
+                writeln!(
+                    self.buf,
+                    "  {} {}, {}",
+                    self.mov_instr(&ty)?,
+                    addr,
+                    Reg::R10.reg_name_for_type(&ty)?
+                )?;
+                self.store_reg_into_value(Reg::R10, dst)
+            }
+            Type::FunType(_, _)
+            | Type::Array(_, _)
+            | Type::IncompleteArray(_)
+            | Type::Struct(_) => Err(CodegenError::CopyFromOffsetUnsupported(ty)),
+        }
+    }
+
+    fn stack_address(offset: i64) -> String {
+        format!("{}(%rbp)", offset)
+    }
+
+    fn format_reg_offset(reg: Reg, offset: i64) -> String {
+        if offset == 0 {
+            format!("({})", reg.reg_name64())
+        } else {
+            format!("{}({})", offset, reg.reg_name64())
+        }
     }
 
     fn static_address(&self, symbol: &str, offset: i64) -> String {
