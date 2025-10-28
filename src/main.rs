@@ -3,13 +3,14 @@ pub(crate) mod cli;
 pub(crate) mod codegen;
 pub(crate) mod fuzzing;
 pub(crate) mod parse;
+pub(crate) mod preprocess;
 pub(crate) mod semantic;
 pub(crate) mod tacky;
 pub(crate) mod tokenize;
 
-use std::fs;
+use std::{fs, path::Path};
 
-use crate::fuzzing::generate;
+use crate::{fuzzing::generate, preprocess::Preprocessor};
 use anyhow::Error;
 use clap::Parser as _;
 
@@ -34,7 +35,7 @@ fn main() -> anyhow::Result<(), Error> {
         if args.verbose {
             eprintln!("{:?}", &source);
         }
-        let tokens = tokenize(&source)?;
+        let tokens = tokenize(&source, input_path.to_str().unwrap())?;
         eprintln!("{:?}", tokens);
     }
     if args.parse {
@@ -42,7 +43,7 @@ fn main() -> anyhow::Result<(), Error> {
         if args.verbose {
             eprintln!("{:?}", &source);
         }
-        let tokens = tokenize(&source)?;
+        let tokens = tokenize(&source, input_path.to_str().unwrap())?;
         if args.verbose {
             eprintln!("{:?}", &tokens);
         }
@@ -55,11 +56,15 @@ fn main() -> anyhow::Result<(), Error> {
         if args.verbose {
             eprintln!("source: {:?}", &source);
         }
-        let tokens = tokenize(&source)?;
+        let tokens = tokenize(&source, input_path.to_str().unwrap())?;
         if args.verbose {
             eprintln!("tokens: {:?}", &tokens);
         }
+        let mut preprocessor = Preprocessor::new(vec![]);
+        let tokens = preprocessor.expand_file(Path::new(&input_path))?;
+
         let mut parser = Parser::new(source.bytes().collect(), tokens);
+
         let ast = parser.parse()?;
         if args.verbose {
             eprintln!("AST: {:?}", &ast);

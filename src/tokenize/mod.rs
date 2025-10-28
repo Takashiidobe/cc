@@ -209,6 +209,12 @@ pub(crate) enum TokenKind {
     #[token("->")]
     Arrow,
 
+    #[regex(r#"#\s*include\s*"[^\n"]+""#, parse_include)]
+    IncludeRelative(String),
+
+    #[regex(r#"#\s*include\s*<[^>\n]+>"#, parse_include)]
+    IncludeSystem(String),
+
     #[regex(r"([0-9]+)", |lex| lex.slice().parse::<i64>().unwrap())]
     Integer(i64),
 
@@ -262,9 +268,10 @@ pub(crate) struct Token {
     pub(crate) start: usize,
     pub(crate) end: usize,
     pub(crate) source: String,
+    pub(crate) filename: String,
 }
 
-pub(crate) fn tokenize(source: &str) -> anyhow::Result<Vec<Token>> {
+pub(crate) fn tokenize(source: &str, filename: &str) -> anyhow::Result<Vec<Token>> {
     let mut lexer = TokenKind::lexer(source);
     let mut tokens = vec![];
 
@@ -282,6 +289,7 @@ pub(crate) fn tokenize(source: &str) -> anyhow::Result<Vec<Token>> {
             start,
             end,
             source,
+            filename: filename.to_string(),
         };
         tokens.push(token);
     }
@@ -374,4 +382,11 @@ fn parse_string_literal(literal: &str) -> Result<String, TokenizerError> {
     }
 
     Ok(out)
+}
+
+pub(crate) fn parse_include(lex: &mut logos::Lexer<TokenKind>) -> String {
+    let text = lex.slice();
+    let start = text.find('"').or_else(|| text.find('<')).unwrap();
+    let end = text.rfind('"').or_else(|| text.rfind('>')).unwrap();
+    text[start + 1..end].to_string()
 }

@@ -2090,6 +2090,7 @@ impl Parser {
             end,
             kind,
             source,
+            ..
         } = self.peek()?;
 
         match kind.clone() {
