@@ -3,4 +3,4 @@ source: tests/cli.rs
 expression: "&mine"
 ---
 stdout: ""
-status: 219
+status: 232

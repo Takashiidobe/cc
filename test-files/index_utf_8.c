@@ -1,1 +1,1 @@
-int main(void) { return ((-1481531917) + (("訖N„&F"[0]))); }
+int main(void) { return "訖N„&F"[0]; }
