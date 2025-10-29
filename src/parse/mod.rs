@@ -168,13 +168,6 @@ pub(crate) enum ForInit {
     Expr(Option<Expr>),
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub(crate) enum Width {
-    W8,
-    W16,
-    W32,
-    W64,
-}
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum Type {
@@ -256,20 +249,6 @@ impl Type {
 
     pub(crate) fn is_integer(&self) -> bool {
         self.is_unsigned() || self.is_signed()
-    }
-
-    pub(crate) fn width(&self) -> Width {
-        use Type::*;
-        match self {
-            SChar | Char | UChar => Width::W8,
-            Short | UShort => Width::W16,
-            Int | UInt => Width::W32,
-            Long | ULong => Width::W64,
-            Double => todo!(),
-            Void | Struct(_) | Pointer(_) | Array(_, _) | IncompleteArray(_) | Fn(_, _) => {
-                todo!("invalid type size")
-            }
-        }
     }
 
     pub(crate) fn bit_width(&self) -> usize {

@@ -1,9 +1,6 @@
 use std::fmt;
 
-use crate::{
-    codegen::CodegenError,
-    parse::{Type, Width},
-};
+use crate::{codegen::CodegenError, parse::Type};
 
 #[derive(PartialEq, Debug, Clone, Copy)]
 pub(crate) enum Reg {
@@ -141,20 +138,4 @@ impl Reg {
             Reg::R11 => "%r11b",
         }
     }
-}
-
-pub(crate) fn width_suffix(w: Width) -> char {
-    match w {
-        Width::W8 => 'b',
-        Width::W16 => 'w',
-        Width::W32 => 'l',
-        Width::W64 => 'q',
-    }
-}
-
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub(crate) enum Ext {
-    Unknown,
-    Zero,
-    Sign,
 }

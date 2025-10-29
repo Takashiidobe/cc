@@ -6,8 +6,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as FmtWrite;
 use std::io::Write;
 
-use crate::codegen::reg::{ARGUMENT_REGISTERS, Ext, FloatReg, Reg};
-use crate::parse::{Const, Type, Width};
+use crate::codegen::reg::{ARGUMENT_REGISTERS, FloatReg, Reg};
+use crate::parse::{Const, Type};
 use crate::tacky::{
     BinaryOp, Function, Instruction, Program as TackyProgram, StaticConstant, StaticInit,
     StaticVariable, TopLevel, UnaryOp, Value,
@@ -1050,10 +1050,9 @@ impl<W: Write> Codegen<W> {
                 )?;
                 self.store_reg_into_value(Reg::R10, dst)
             }
-            Type::Fn(_, _)
-            | Type::Array(_, _)
-            | Type::IncompleteArray(_)
-            | Type::Struct(_) => Err(CodegenError::CopyFromOffsetUnsupported(ty)),
+            Type::Fn(_, _) | Type::Array(_, _) | Type::IncompleteArray(_) | Type::Struct(_) => {
+                Err(CodegenError::CopyFromOffsetUnsupported(ty))
+            }
         }
     }
 
@@ -1513,10 +1512,9 @@ impl<W: Write> Codegen<W> {
             Type::Int | Type::UInt => Ok("movl"),
             Type::Long | Type::ULong | Type::Void | Type::Pointer(_) => Ok("movq"),
             Type::Double => Err(CodegenError::MovUnsupported(ty.clone())),
-            Type::Fn(_, _)
-            | Type::Array(_, _)
-            | Type::IncompleteArray(_)
-            | Type::Struct(_) => Err(CodegenError::MovUnsupported(ty.clone())),
+            Type::Fn(_, _) | Type::Array(_, _) | Type::IncompleteArray(_) | Type::Struct(_) => {
+                Err(CodegenError::MovUnsupported(ty.clone()))
+            }
         }
     }
 
@@ -1538,121 +1536,6 @@ impl<W: Write> Codegen<W> {
             Value::Constant(Const::Double(_)) => Some(Type::Double),
             Value::Var(name) => self.value_types.get(name).cloned(),
             Value::Global(name) => self.global_types.get(name).cloned(),
-        }
-    }
-
-    fn emit_widen(&mut self, src: Reg, src_ty: Type, dst: Reg, dst_ty: Type) -> Result<()> {
-        use Ext::*;
-        use Width::*;
-
-        let sw = src_ty.width();
-        let dw = dst_ty.width();
-
-        let name = |r: Reg, t: Type| -> String { r.reg_name_for_type(&t).unwrap().to_string() };
-
-        if sw == dw {
-            let suf = match dw {
-                W8 => 'b',
-                W16 => 'w',
-                W32 => 'l',
-                W64 => 'q',
-            };
-            return Ok(writeln!(
-                self.buf,
-                "  mov{} {}, {}",
-                suf,
-                name(src, dst_ty.clone()),
-                name(dst, dst_ty)
-            )?);
-        }
-
-        let ext = match (sw, dw) {
-            (W8, W16 | W32 | W64) | (W16, W32 | W64) | (W32, W64) => {
-                if src_ty.is_signed() {
-                    Sign
-                } else {
-                    Zero
-                }
-            }
-            _ => panic!(),
-        };
-
-        match (sw, dw, ext) {
-            (W8, W16, Zero) => Ok(writeln!(
-                self.buf,
-                "  movzbw {}, {}",
-                name(src, Type::UChar),
-                name(dst, Type::UShort)
-            )?),
-            (W8, W32, Zero) => Ok(writeln!(
-                self.buf,
-                "  movzbl {}, {}",
-                name(src, Type::UChar),
-                name(dst, Type::UInt)
-            )?),
-            (W8, W64, Zero) => Ok(writeln!(
-                self.buf,
-                "  movzbq {}, {}",
-                name(src, Type::UChar),
-                name(dst, Type::ULong)
-            )?),
-            (W16, W32, Zero) => Ok(writeln!(
-                self.buf,
-                "  movzwl {}, {}",
-                name(src, Type::UShort),
-                name(dst, Type::UInt)
-            )?),
-            (W16, W64, Zero) => Ok(writeln!(
-                self.buf,
-                "  movzwq {}, {}",
-                name(src, Type::UShort),
-                name(dst, Type::ULong)
-            )?),
-            (W32, W64, Zero) => Ok(writeln!(
-                self.buf,
-                "  movl {}, {}",
-                src.reg_name32(),
-                dst.reg_name32()
-            )?),
-
-            // Sign-extend
-            (W8, W16, Ext::Sign) => Ok(writeln!(
-                self.buf,
-                "  movsbw {}, {}",
-                name(src, Type::Char),
-                name(dst, Type::Short)
-            )?),
-            (W8, W32, Ext::Sign) => Ok(writeln!(
-                self.buf,
-                "  movsbl {}, {}",
-                name(src, Type::Char),
-                name(dst, Type::Int)
-            )?),
-            (W8, W64, Ext::Sign) => Ok(writeln!(
-                self.buf,
-                "  movsbq {}, {}",
-                name(src, Type::Char),
-                name(dst, Type::Long)
-            )?),
-            (W16, W32, Ext::Sign) => Ok(writeln!(
-                self.buf,
-                "  movswl {}, {}",
-                name(src, Type::Short),
-                name(dst, Type::Int)
-            )?),
-            (W16, W64, Ext::Sign) => Ok(writeln!(
-                self.buf,
-                "  movswq {}, {}",
-                name(src, Type::Short),
-                name(dst, Type::Long)
-            )?),
-            (W32, W64, Ext::Sign) => Ok(writeln!(
-                self.buf,
-                "  movslq {}, {}",
-                src.reg_name32(),
-                dst.reg_name64()
-            )?),
-            _ => panic!(),
         }
     }
 }
