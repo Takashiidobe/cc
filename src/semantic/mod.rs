@@ -9,13 +9,14 @@ use thiserror::Error;
 
 use crate::{
     parse::{
-        Const, Decl, DeclKind, Expr, ExprKind, ForInit, FunctionDecl, ParameterDecl, Program, Stmt,
-        StmtKind, StorageClass, StructDeclaration, Type, VariableDecl,
+        Const, Decl, DeclKind, Expr, ExprKind, ForInit, FunctionDecl, ParameterDecl, Program,
+        SourceLocation, Stmt, StmtKind, StorageClass, StructDeclaration, Type, VariableDecl,
     },
     semantic::structs::{StructLayout, StructMemberLayout},
     tokenize::TokenKind,
 };
 
+#[allow(clippy::large_enum_variant)]
 #[derive(Error, Debug)]
 pub(crate) enum SemanticError {
     #[error("Cannot cast from type `{0}` to `{1}`")]
@@ -162,11 +163,11 @@ impl SemanticAnalyzer {
     fn collect_struct_definitions(&mut self, program: &Program) -> Result<(), SemanticError> {
         self.struct_defs.clear();
         for decl in &program.0 {
-            if let DeclKind::Struct(struct_decl) = &decl.kind {
-                if !struct_decl.members.is_empty() {
-                    self.struct_defs
-                        .insert(struct_decl.tag.clone(), struct_decl.clone());
-                }
+            if let DeclKind::Struct(struct_decl) = &decl.kind
+                && !struct_decl.members.is_empty()
+            {
+                self.struct_defs
+                    .insert(struct_decl.tag.clone(), struct_decl.clone());
             }
         }
         Ok(())
@@ -208,7 +209,7 @@ impl SemanticAnalyzer {
                     member.member_type
                 )));
             }
-            if offset % align != 0 {
+            if !offset.is_multiple_of(align) {
                 offset += align - (offset % align);
             }
             members.insert(
@@ -222,7 +223,7 @@ impl SemanticAnalyzer {
             max_align = max_align.max(align);
         }
 
-        if max_align > 0 && offset % max_align != 0 {
+        if max_align > 0 && !offset.is_multiple_of(max_align) {
             offset += max_align - (offset % max_align);
         }
 
@@ -245,13 +246,10 @@ impl SemanticAnalyzer {
                 let (size, align) = self.type_size_align(inner)?;
                 Ok((size * len, align))
             }
-            Type::IncompleteArray(inner) => {
-                let (_, align) = self.type_size_align(inner)?;
-                Err(SemanticError::Unsupported(format!(
-                    "incomplete array type `{}` has no size",
-                    ty
-                )))
-            }
+            Type::IncompleteArray(_) => Err(SemanticError::Unsupported(format!(
+                "incomplete array type `{}` has no size",
+                ty
+            ))),
             Type::Pointer(_) => Ok((8, 8)),
             Type::FunType(_, _) => Err(SemanticError::Unsupported(format!(
                 "cannot determine size of function type `{}`",
@@ -275,12 +273,7 @@ impl SemanticAnalyzer {
     }
 
     fn analyze_decl(&mut self, decl: Decl) -> Result<Decl, SemanticError> {
-        let Decl {
-            kind,
-            start,
-            end,
-            source,
-        } = decl;
+        let Decl { kind, loc } = decl;
 
         let kind = match kind {
             DeclKind::Function(func) => DeclKind::Function(self.analyze_function(func)?),
@@ -288,12 +281,7 @@ impl SemanticAnalyzer {
             DeclKind::Struct(decl) => DeclKind::Struct(decl),
         };
 
-        Ok(Decl {
-            kind,
-            start,
-            end,
-            source,
-        })
+        Ok(Decl { kind, loc })
     }
 
     fn analyze_function(&mut self, decl: FunctionDecl) -> Result<FunctionDecl, SemanticError> {
@@ -503,9 +491,7 @@ impl SemanticAnalyzer {
     fn analyze_stmt(&mut self, stmt: Stmt) -> Result<Stmt, SemanticError> {
         let Stmt {
             kind,
-            start,
-            end,
-            source,
+            loc,
             r#type: _,
         } = stmt;
 
@@ -607,9 +593,7 @@ impl SemanticAnalyzer {
 
         Ok(Stmt {
             kind,
-            start,
-            end,
-            source,
+            loc,
             r#type: Type::Void,
         })
     }
@@ -629,9 +613,7 @@ impl SemanticAnalyzer {
     ) -> Result<Expr, SemanticError> {
         let Expr {
             kind,
-            start,
-            end,
-            source,
+            loc,
             r#type: _,
         } = expr;
 
@@ -650,26 +632,20 @@ impl SemanticAnalyzer {
                 };
                 Expr {
                     kind: ExprKind::Constant(c),
-                    start,
-                    end,
-                    source,
+                    loc,
                     r#type: ty,
                 }
             }
             ExprKind::String(value) => Expr {
                 kind: ExprKind::String(value),
-                start,
-                end,
-                source,
+                loc,
                 r#type: Type::Pointer(Box::new(Type::Char)),
             },
             ExprKind::Var(name) => {
                 let symbol = self.lookup_symbol(&name)?;
                 Expr {
                     kind: ExprKind::Var(symbol.unique.clone()),
-                    start,
-                    end,
-                    source,
+                    loc,
                     r#type: symbol.ty.clone(),
                 }
             }
@@ -678,9 +654,7 @@ impl SemanticAnalyzer {
                 let size = self.size_of_type(&analyzed.r#type)?;
                 Expr {
                     kind: ExprKind::Constant(Const::ULong(size)),
-                    start,
-                    end,
-                    source,
+                    loc,
                     r#type: Type::ULong,
                 }
             }
@@ -688,9 +662,7 @@ impl SemanticAnalyzer {
                 let size = self.size_of_type(&ty)?;
                 Expr {
                     kind: ExprKind::Constant(Const::ULong(size)),
-                    start,
-                    end,
-                    source,
+                    loc,
                     r#type: Type::ULong,
                 }
             }
@@ -718,9 +690,7 @@ impl SemanticAnalyzer {
 
                 Expr {
                     kind: ExprKind::FunctionCall(name, analyzed_args),
-                    start,
-                    end,
-                    source,
+                    loc,
                     r#type: signature.return_type,
                 }
             }
@@ -738,26 +708,18 @@ impl SemanticAnalyzer {
                 let ty = target.clone();
                 Expr {
                     kind: ExprKind::Cast(ty.clone(), Box::new(expr1)),
-                    start,
-                    end,
-                    source,
+                    loc,
                     r#type: ty,
                 }
             }
-            ExprKind::Neg(expr0) => {
-                self.analyze_arithmetic_unary(*expr0, start, end, source.clone(), ExprKind::Neg)?
-            }
-            ExprKind::BitNot(expr0) => {
-                self.analyze_integer_unary(*expr0, start, end, source.clone(), ExprKind::BitNot)?
-            }
+            ExprKind::Neg(expr) => self.analyze_arithmetic_unary(*expr, loc, ExprKind::Neg)?,
+            ExprKind::BitNot(expr) => self.analyze_integer_unary(*expr, loc, ExprKind::BitNot)?,
             ExprKind::Not(expr0) => {
                 let expr1 = self.analyze_expr(*expr0)?;
                 self.ensure_condition_type(&expr1.r#type, "logical not")?;
                 Expr {
                     kind: ExprKind::Not(Box::new(expr1)),
-                    start,
-                    end,
-                    source,
+                    loc,
                     r#type: Type::Int,
                 }
             }
@@ -767,9 +729,7 @@ impl SemanticAnalyzer {
                 let ty = Type::Pointer(Box::new(expr1.r#type.clone()));
                 Expr {
                     kind: ExprKind::AddrOf(Box::new(expr1)),
-                    start,
-                    end,
-                    source,
+                    loc,
                     r#type: ty,
                 }
             }
@@ -789,9 +749,7 @@ impl SemanticAnalyzer {
                 };
                 Expr {
                     kind: ExprKind::Dereference(Box::new(expr1)),
-                    start,
-                    end,
-                    source,
+                    loc,
                     r#type: ty,
                 }
             }
@@ -836,9 +794,7 @@ impl SemanticAnalyzer {
                         offset: member_layout.offset,
                         is_arrow,
                     },
-                    start,
-                    end,
-                    source,
+                    loc,
                     r#type: member_type,
                 }
             }
@@ -866,91 +822,50 @@ impl SemanticAnalyzer {
                         Box::new(then_expr),
                         Box::new(else_expr),
                     ),
-                    start,
-                    end,
-                    source,
+                    loc,
                     r#type: result_type,
                 }
             }
-            ExprKind::Add(lhs, rhs) => self.analyze_add(*lhs, *rhs, start, end, source.clone())?,
-            ExprKind::Sub(lhs, rhs) => self.analyze_sub(*lhs, *rhs, start, end, source.clone())?,
-            ExprKind::Mul(lhs, rhs) => self.analyze_arithmetic_binary(
-                *lhs,
-                *rhs,
-                start,
-                end,
-                source.clone(),
-                ExprKind::Mul,
-            )?,
-            ExprKind::Div(lhs, rhs) => self.analyze_arithmetic_binary(
-                *lhs,
-                *rhs,
-                start,
-                end,
-                source.clone(),
-                ExprKind::Div,
-            )?,
+            ExprKind::Add(lhs, rhs) => self.analyze_add(*lhs, *rhs, loc)?,
+            ExprKind::Sub(lhs, rhs) => self.analyze_sub(*lhs, *rhs, loc)?,
+            ExprKind::Mul(lhs, rhs) => {
+                self.analyze_arithmetic_binary(*lhs, *rhs, loc, ExprKind::Mul)?
+            }
+            ExprKind::Div(lhs, rhs) => {
+                self.analyze_arithmetic_binary(*lhs, *rhs, loc, ExprKind::Div)?
+            }
             ExprKind::Rem(lhs, rhs) => {
-                self.analyze_integer_binary(*lhs, *rhs, start, end, source.clone(), ExprKind::Rem)?
+                self.analyze_integer_binary(*lhs, *rhs, loc, ExprKind::Rem)?
             }
-            ExprKind::Equal(lhs, rhs) => {
-                self.analyze_equality(*lhs, *rhs, start, end, source.clone(), ExprKind::Equal)?
-            }
+            ExprKind::Equal(lhs, rhs) => self.analyze_equality(*lhs, *rhs, loc, ExprKind::Equal)?,
             ExprKind::NotEqual(lhs, rhs) => {
-                self.analyze_equality(*lhs, *rhs, start, end, source.clone(), ExprKind::NotEqual)?
+                self.analyze_equality(*lhs, *rhs, loc, ExprKind::NotEqual)?
             }
             ExprKind::LessThan(lhs, rhs) => {
-                self.analyze_comparison(*lhs, *rhs, start, end, source.clone(), ExprKind::LessThan)?
+                self.analyze_comparison(*lhs, *rhs, loc, ExprKind::LessThan)?
             }
-            ExprKind::LessThanEqual(lhs, rhs) => self.analyze_comparison(
-                *lhs,
-                *rhs,
-                start,
-                end,
-                source.clone(),
-                ExprKind::LessThanEqual,
-            )?,
-            ExprKind::GreaterThan(lhs, rhs) => self.analyze_comparison(
-                *lhs,
-                *rhs,
-                start,
-                end,
-                source.clone(),
-                ExprKind::GreaterThan,
-            )?,
-            ExprKind::GreaterThanEqual(lhs, rhs) => self.analyze_comparison(
-                *lhs,
-                *rhs,
-                start,
-                end,
-                source.clone(),
-                ExprKind::GreaterThanEqual,
-            )?,
-            ExprKind::Or(lhs, rhs) => {
-                self.analyze_logical_binary(*lhs, *rhs, start, end, source.clone(), ExprKind::Or)?
+            ExprKind::LessThanEqual(lhs, rhs) => {
+                self.analyze_comparison(*lhs, *rhs, loc, ExprKind::LessThanEqual)?
             }
+            ExprKind::GreaterThan(lhs, rhs) => {
+                self.analyze_comparison(*lhs, *rhs, loc, ExprKind::GreaterThan)?
+            }
+            ExprKind::GreaterThanEqual(lhs, rhs) => {
+                self.analyze_comparison(*lhs, *rhs, loc, ExprKind::GreaterThanEqual)?
+            }
+            ExprKind::Or(lhs, rhs) => self.analyze_logical_binary(*lhs, *rhs, loc, ExprKind::Or)?,
             ExprKind::And(lhs, rhs) => {
-                self.analyze_logical_binary(*lhs, *rhs, start, end, source.clone(), ExprKind::And)?
+                self.analyze_logical_binary(*lhs, *rhs, loc, ExprKind::And)?
             }
-            ExprKind::BitAnd(lhs, rhs) => self.analyze_integer_binary(
-                *lhs,
-                *rhs,
-                start,
-                end,
-                source.clone(),
-                ExprKind::BitAnd,
-            )?,
+            ExprKind::BitAnd(lhs, rhs) => {
+                self.analyze_integer_binary(*lhs, *rhs, loc, ExprKind::BitAnd)?
+            }
             ExprKind::Xor(lhs, rhs) => {
-                self.analyze_integer_binary(*lhs, *rhs, start, end, source.clone(), ExprKind::Xor)?
+                self.analyze_integer_binary(*lhs, *rhs, loc, ExprKind::Xor)?
             }
-            ExprKind::BitOr(lhs, rhs) => self.analyze_integer_binary(
-                *lhs,
-                *rhs,
-                start,
-                end,
-                source.clone(),
-                ExprKind::BitOr,
-            )?,
+            ExprKind::BitOr(lhs, rhs) => {
+                self.analyze_integer_binary(*lhs, *rhs, loc, ExprKind::BitOr)?
+            }
             ExprKind::LeftShift(lhs, rhs) => {
                 let lhs = self.analyze_expr(*lhs)?;
                 let rhs = self.analyze_expr(*rhs)?;
@@ -959,9 +874,7 @@ impl SemanticAnalyzer {
                 let ty = lhs.r#type.clone();
                 Expr {
                     kind: ExprKind::LeftShift(Box::new(lhs), Box::new(rhs)),
-                    start,
-                    end,
-                    source,
+                    loc,
                     r#type: ty,
                 }
             }
@@ -973,9 +886,7 @@ impl SemanticAnalyzer {
                 let ty = lhs.r#type.clone();
                 Expr {
                     kind: ExprKind::RightShift(Box::new(lhs), Box::new(rhs)),
-                    start,
-                    end,
-                    source,
+                    loc,
                     r#type: ty,
                 }
             }
@@ -992,9 +903,7 @@ impl SemanticAnalyzer {
                 self.ensure_assignable(&lhs_type, &rhs.r#type, "assignment")?;
                 Expr {
                     kind: ExprKind::Assignment(Box::new(lhs), Box::new(rhs)),
-                    start,
-                    end,
-                    source,
+                    loc,
                     r#type: lhs_type,
                 }
             }
@@ -1005,9 +914,7 @@ impl SemanticAnalyzer {
                 let ty = expr1.r#type.clone();
                 Expr {
                     kind: ExprKind::PreIncrement(Box::new(expr1)),
-                    start,
-                    end,
-                    source,
+                    loc,
                     r#type: ty,
                 }
             }
@@ -1018,9 +925,7 @@ impl SemanticAnalyzer {
                 let ty = expr1.r#type.clone();
                 Expr {
                     kind: ExprKind::PreDecrement(Box::new(expr1)),
-                    start,
-                    end,
-                    source,
+                    loc,
                     r#type: ty,
                 }
             }
@@ -1031,9 +936,7 @@ impl SemanticAnalyzer {
                 let ty = expr1.r#type.clone();
                 Expr {
                     kind: ExprKind::PostIncrement(Box::new(expr1)),
-                    start,
-                    end,
-                    source,
+                    loc,
                     r#type: ty,
                 }
             }
@@ -1044,9 +947,7 @@ impl SemanticAnalyzer {
                 let ty = expr1.r#type.clone();
                 Expr {
                     kind: ExprKind::PostDecrement(Box::new(expr1)),
-                    start,
-                    end,
-                    source,
+                    loc,
                     r#type: ty,
                 }
             }
@@ -1076,9 +977,7 @@ impl SemanticAnalyzer {
     fn analyze_integer_unary<F>(
         &mut self,
         expr: Expr,
-        start: usize,
-        end: usize,
-        source: String,
+        loc: SourceLocation,
         constructor: F,
     ) -> Result<Expr, SemanticError>
     where
@@ -1089,9 +988,7 @@ impl SemanticAnalyzer {
         let ty = expr.r#type.clone();
         Ok(Expr {
             kind: constructor(Box::new(expr)),
-            start,
-            end,
-            source,
+            loc,
             r#type: ty,
         })
     }
@@ -1099,9 +996,7 @@ impl SemanticAnalyzer {
     fn analyze_arithmetic_unary<F>(
         &mut self,
         expr: Expr,
-        start: usize,
-        end: usize,
-        source: String,
+        loc: SourceLocation,
         constructor: F,
     ) -> Result<Expr, SemanticError>
     where
@@ -1112,9 +1007,7 @@ impl SemanticAnalyzer {
         let ty = expr.r#type.clone();
         Ok(Expr {
             kind: constructor(Box::new(expr)),
-            start,
-            end,
-            source,
+            loc,
             r#type: ty,
         })
     }
@@ -1123,9 +1016,7 @@ impl SemanticAnalyzer {
         &mut self,
         lhs: Expr,
         rhs: Expr,
-        start: usize,
-        end: usize,
-        source: String,
+        loc: SourceLocation,
     ) -> Result<Expr, SemanticError> {
         let lhs = self.analyze_expr(lhs)?;
         let rhs = self.analyze_expr(rhs)?;
@@ -1146,9 +1037,7 @@ impl SemanticAnalyzer {
 
         Ok(Expr {
             kind: ExprKind::Add(Box::new(lhs), Box::new(rhs)),
-            start,
-            end,
-            source,
+            loc,
             r#type: result_type,
         })
     }
@@ -1157,9 +1046,7 @@ impl SemanticAnalyzer {
         &mut self,
         lhs: Expr,
         rhs: Expr,
-        start: usize,
-        end: usize,
-        source: String,
+        loc: SourceLocation,
     ) -> Result<Expr, SemanticError> {
         let lhs = self.analyze_expr(lhs)?;
         let rhs = self.analyze_expr(rhs)?;
@@ -1184,9 +1071,7 @@ impl SemanticAnalyzer {
 
         Ok(Expr {
             kind: ExprKind::Sub(Box::new(lhs), Box::new(rhs)),
-            start,
-            end,
-            source,
+            loc,
             r#type: result_type,
         })
     }
@@ -1195,9 +1080,7 @@ impl SemanticAnalyzer {
         &mut self,
         lhs: Expr,
         rhs: Expr,
-        start: usize,
-        end: usize,
-        source: String,
+        loc: SourceLocation,
         constructor: F,
     ) -> Result<Expr, SemanticError>
     where
@@ -1210,9 +1093,7 @@ impl SemanticAnalyzer {
         let ty = self.numeric_result_type(&lhs.r#type, &rhs.r#type)?;
         Ok(Expr {
             kind: constructor(Box::new(lhs), Box::new(rhs)),
-            start,
-            end,
-            source,
+            loc,
             r#type: ty,
         })
     }
@@ -1221,9 +1102,7 @@ impl SemanticAnalyzer {
         &mut self,
         lhs: Expr,
         rhs: Expr,
-        start: usize,
-        end: usize,
-        source: String,
+        loc: SourceLocation,
         constructor: F,
     ) -> Result<Expr, SemanticError>
     where
@@ -1236,9 +1115,7 @@ impl SemanticAnalyzer {
         let ty = self.numeric_result_type(&lhs.r#type, &rhs.r#type)?;
         Ok(Expr {
             kind: constructor(Box::new(lhs), Box::new(rhs)),
-            start,
-            end,
-            source,
+            loc,
             r#type: ty,
         })
     }
@@ -1247,9 +1124,7 @@ impl SemanticAnalyzer {
         &mut self,
         lhs: Expr,
         rhs: Expr,
-        start: usize,
-        end: usize,
-        source: String,
+        loc: SourceLocation,
         constructor: F,
     ) -> Result<Expr, SemanticError>
     where
@@ -1265,9 +1140,7 @@ impl SemanticAnalyzer {
         }
         Ok(Expr {
             kind: constructor(Box::new(lhs), Box::new(rhs)),
-            start,
-            end,
-            source,
+            loc,
             r#type: Type::Int,
         })
     }
@@ -1276,9 +1149,7 @@ impl SemanticAnalyzer {
         &mut self,
         lhs: Expr,
         rhs: Expr,
-        start: usize,
-        end: usize,
-        source: String,
+        loc: SourceLocation,
         constructor: F,
     ) -> Result<Expr, SemanticError>
     where
@@ -1290,9 +1161,7 @@ impl SemanticAnalyzer {
         self.ensure_numeric_type(&rhs.r#type, "comparison operand")?;
         Ok(Expr {
             kind: constructor(Box::new(lhs), Box::new(rhs)),
-            start,
-            end,
-            source,
+            loc,
             r#type: Type::Int,
         })
     }
@@ -1301,9 +1170,7 @@ impl SemanticAnalyzer {
         &mut self,
         lhs: Expr,
         rhs: Expr,
-        start: usize,
-        end: usize,
-        source: String,
+        loc: SourceLocation,
         constructor: F,
     ) -> Result<Expr, SemanticError>
     where
@@ -1315,9 +1182,7 @@ impl SemanticAnalyzer {
         self.ensure_condition_type(&rhs.r#type, "logical operand")?;
         Ok(Expr {
             kind: constructor(Box::new(lhs), Box::new(rhs)),
-            start,
-            end,
-            source,
+            loc,
             r#type: Type::Int,
         })
     }

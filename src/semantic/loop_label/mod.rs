@@ -26,12 +26,7 @@ impl LoopLabeler {
     }
 
     fn label_decl(&mut self, decl: Decl) -> Result<Decl, LoopLabelerError> {
-        let Decl {
-            kind,
-            start,
-            end,
-            source,
-        } = decl;
+        let Decl { kind, loc } = decl;
 
         let kind = match kind {
             DeclKind::Function(func) => DeclKind::Function(self.label_function(func)?),
@@ -39,12 +34,7 @@ impl LoopLabeler {
             DeclKind::Struct(decl) => DeclKind::Struct(decl),
         };
 
-        Ok(Decl {
-            kind,
-            start,
-            end,
-            source,
-        })
+        Ok(Decl { kind, loc })
     }
 
     fn label_function(&mut self, decl: FunctionDecl) -> Result<FunctionDecl, LoopLabelerError> {
@@ -75,13 +65,7 @@ impl LoopLabeler {
     }
 
     fn label_stmt(&mut self, stmt: Stmt) -> Result<Stmt, LoopLabelerError> {
-        let Stmt {
-            kind,
-            start,
-            end,
-            source,
-            r#type,
-        } = stmt;
+        let Stmt { kind, loc, r#type } = stmt;
 
         let kind = match kind {
             StmtKind::Return(expr) => StmtKind::Return(expr),
@@ -171,13 +155,7 @@ impl LoopLabeler {
             }
         };
 
-        Ok(Stmt {
-            kind,
-            start,
-            end,
-            source,
-            r#type,
-        })
+        Ok(Stmt { kind, loc, r#type })
     }
 
     fn loop_body(

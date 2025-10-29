@@ -4,7 +4,8 @@
 pub(crate) mod display;
 
 use crate::parse::{
-    Const, Decl, DeclKind, Expr, ExprKind, ForInit, FunctionDecl, Program, Stmt, StmtKind, Type,
+    Const, Decl, DeclKind, Expr, ExprKind, ForInit, FunctionDecl, Program, SourceLocation, Stmt,
+    StmtKind, Type,
 };
 use quickcheck::{Arbitrary, Gen, empty_shrinker};
 
@@ -59,18 +60,14 @@ fn gen_stmts(g: &mut Gen, times: usize) -> Vec<Stmt> {
 fn fn_decl(function: FunctionDecl) -> Decl {
     Decl {
         kind: DeclKind::Function(function),
-        start: 0,
-        end: 0,
-        source: String::new(),
+        loc: SourceLocation::default(),
     }
 }
 
 fn gen_stmt(g: &mut Gen, r#type: Type) -> Stmt {
     Stmt {
         kind: rand_stmt_kind(g, r#type.clone()),
-        start: 0,
-        end: 0,
-        source: String::new(),
+        loc: SourceLocation::default(),
         r#type,
     }
 }
@@ -100,9 +97,7 @@ fn constant_expr(g: &mut Gen, r#type: Type) -> Expr {
 
     Expr {
         kind: ExprKind::Constant(constant),
-        start: 0,
-        end: 0,
-        source: String::new(),
+        loc: SourceLocation::default(),
         r#type,
     }
 }
@@ -113,9 +108,7 @@ fn gen_unary(g: &mut Gen, r#type: Type) -> Expr {
 
     Expr {
         kind: rand_unary_kind(g, expr_kind),
-        start: 0,
-        end: 0,
-        source: String::new(),
+        loc: SourceLocation::default(),
         r#type,
     }
 }
@@ -126,9 +119,7 @@ fn gen_binary(g: &mut Gen, r#type: Type) -> Expr {
 
     Expr {
         kind: rand_binary_kind(g, lhs, rhs),
-        start: 0,
-        end: 0,
-        source: String::new(),
+        loc: SourceLocation::default(),
         r#type,
     }
 }
@@ -140,9 +131,7 @@ fn gen_incr_decr(g: &mut Gen, r#type: Type) -> Expr {
 
     Expr {
         kind: rand_incr_decr_kind(g, expr),
-        start: 0,
-        end: 0,
-        source: String::new(),
+        loc: SourceLocation::default(),
         r#type,
     }
 }

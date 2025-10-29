@@ -2,7 +2,7 @@ pub(crate) mod error;
 
 use logos::Logos;
 
-use crate::tokenize::error::TokenizerError;
+use crate::{parse::SourceLocation, tokenize::error::TokenizerError};
 
 #[derive(Debug, Clone, PartialEq, Logos)]
 #[logos(skip r"[ \t\r\n\f]+")]
@@ -265,9 +265,7 @@ pub(crate) enum TokenKind {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Token {
     pub(crate) kind: TokenKind,
-    pub(crate) start: usize,
-    pub(crate) end: usize,
-    pub(crate) source: String,
+    pub(crate) loc: SourceLocation,
     pub(crate) filename: String,
 }
 
@@ -286,9 +284,7 @@ pub(crate) fn tokenize(source: &str, filename: &str) -> anyhow::Result<Vec<Token
         let source = lexer.slice().to_string();
         let token = Token {
             kind,
-            start,
-            end,
-            source,
+            loc: SourceLocation { start, end, source },
             filename: filename.to_string(),
         };
         tokens.push(token);

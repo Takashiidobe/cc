@@ -199,11 +199,10 @@ pub(crate) enum DeclKind {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Decl {
     pub(crate) kind: DeclKind,
-    pub(crate) start: usize,
-    pub(crate) end: usize,
-    pub(crate) source: String,
+    pub(crate) loc: SourceLocation,
 }
 
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum StmtKind {
     Expr(Expr),
@@ -519,13 +518,17 @@ impl fmt::Display for Const {
         })
     }
 }
+#[derive(Default, Debug, Clone, PartialEq)]
+pub(crate) struct SourceLocation {
+    pub(crate) start: usize,
+    pub(crate) end: usize,
+    pub(crate) source: String,
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Node<Kind> {
     pub(crate) kind: Kind,
-    pub(crate) start: usize,
-    pub(crate) end: usize,
-    pub(crate) source: String,
+    pub(crate) loc: SourceLocation,
     pub(crate) r#type: Type,
 }
 
@@ -1046,14 +1049,12 @@ impl Parser {
             return Err(ParserError::UnexpectedEof("while parsing declaration"));
         }
 
-        let Token { start, .. } = self.peek()?;
+        let Token { loc, .. } = self.peek()?;
         let (base_type, storage_class, struct_decl) = self.parse_specifiers()?;
 
         if matches!(self.peek_kind(), Some(TokenKind::Semicolon)) {
             if let Type::Struct(tag) = &base_type {
                 self.advance()?;
-                let end = self.index;
-                let source = self.source_slice(start, end);
                 let decl = match struct_decl {
                     Some(decl) => decl,
                     None => StructDeclaration {
@@ -1063,9 +1064,7 @@ impl Parser {
                 };
                 return Ok(Decl {
                     kind: DeclKind::Struct(decl),
-                    start,
-                    end,
-                    source,
+                    loc: self.source_location(loc.start),
                 });
             }
         }
@@ -1075,14 +1074,14 @@ impl Parser {
         match declarator.type_expr {
             TypeExpr::Function { params, ret } => {
                 let return_type = ret.apply(base_type);
-                self.parse_function_declaration(start, name, params, return_type, storage_class)
+                self.parse_function_declaration(loc.start, name, params, return_type, storage_class)
             }
             type_expr => {
                 let var_type = type_expr.apply(base_type);
                 if var_type.is_void() {
                     return Err(ParserError::VariableWithVoidType);
                 }
-                self.parse_variable_declaration(start, name, var_type, storage_class)
+                self.parse_variable_declaration(loc.start, name, var_type, storage_class)
             }
         }
     }
@@ -1105,9 +1104,6 @@ impl Parser {
             None
         };
 
-        let end = self.index;
-        let source = self.source_slice(start, end);
-
         Ok(Decl {
             kind: DeclKind::Function(FunctionDecl {
                 name,
@@ -1116,9 +1112,7 @@ impl Parser {
                 storage_class,
                 return_type,
             }),
-            start,
-            end,
-            source,
+            loc: self.source_location(start),
         })
     }
 
@@ -1142,9 +1136,6 @@ impl Parser {
 
         self.expect(&TokenKind::Semicolon)?;
 
-        let end = self.index;
-        let source = self.source_slice(start, end);
-
         let is_definition = storage_class != Some(StorageClass::Extern);
         let decl = VariableDecl {
             name,
@@ -1156,9 +1147,7 @@ impl Parser {
 
         Ok(Decl {
             kind: DeclKind::Variable(decl),
-            start,
-            end,
-            source,
+            loc: self.source_location(start),
         })
     }
 
@@ -1177,7 +1166,7 @@ impl Parser {
     }
 
     fn variable_declaration_stmt(&mut self) -> PResult<Stmt> {
-        let Token { start, .. } = self.peek()?;
+        let Token { loc, .. } = self.peek()?;
         let (base_type, storage_class, _) = self.parse_specifiers()?;
         let declarator = self.parse_declarator()?;
         let name = declarator.name.clone();
@@ -1197,9 +1186,6 @@ impl Parser {
 
         self.expect(&TokenKind::Semicolon)?;
 
-        let end = self.index;
-        let source = self.source_slice(start, end);
-
         let is_definition = storage_class != Some(StorageClass::Extern);
         let decl = VariableDecl {
             name,
@@ -1211,9 +1197,7 @@ impl Parser {
 
         Ok(Stmt {
             kind: StmtKind::Declaration(decl),
-            start,
-            end,
-            source,
+            loc: self.source_location(loc.start),
             r#type: var_type,
         })
     }
@@ -1225,11 +1209,10 @@ impl Parser {
                 self.advance()?;
                 let expr = self.expr()?;
                 self.expect(&TokenKind::Semicolon)?;
+                let loc = self.source_location(token.loc.start);
                 Ok(Stmt {
                     kind: StmtKind::Return(expr),
-                    start: token.start,
-                    end: self.index,
-                    source: token.source,
+                    loc,
                     r#type: Type::Int,
                 })
             }
@@ -1238,9 +1221,7 @@ impl Parser {
                 self.advance()?;
                 Ok(Stmt {
                     kind: StmtKind::Null,
-                    start: token.start,
-                    end: token.end,
-                    source: token.source,
+                    loc: token.loc,
                     r#type: Type::Void,
                 })
             }
@@ -1253,14 +1234,9 @@ impl Parser {
             _ => {
                 let expr = self.expr()?;
                 self.expect(&TokenKind::Semicolon)?;
-                let start = expr.start;
-                let end = expr.end;
-                let source = expr.source.clone();
                 Ok(Stmt {
-                    kind: StmtKind::Expr(expr),
-                    start,
-                    end,
-                    source,
+                    kind: StmtKind::Expr(expr.clone()),
+                    loc: expr.loc,
                     r#type: Type::Int,
                 })
             }
@@ -1268,72 +1244,59 @@ impl Parser {
     }
 
     fn break_stmt(&mut self) -> PResult<Stmt> {
-        let Token { start, .. } = self.peek()?;
+        let Token { loc, .. } = self.peek()?;
         self.advance()?;
         self.expect(&TokenKind::Semicolon)?;
-        let end = self.index;
         Ok(Stmt {
             kind: StmtKind::Break { loop_id: None },
-            start,
-            end,
-            source: self.source_slice(start, end),
+            loc: self.source_location(loc.start),
             r#type: Type::Void,
         })
     }
 
     fn continue_stmt(&mut self) -> PResult<Stmt> {
-        let Token { start, .. } = self.peek()?;
+        let Token { loc, .. } = self.peek()?;
         self.advance()?;
         self.expect(&TokenKind::Semicolon)?;
-        let end = self.index;
         Ok(Stmt {
             kind: StmtKind::Continue { loop_id: None },
-            start,
-            end,
-            source: self.source_slice(start, end),
+            loc: self.source_location(loc.start),
             r#type: Type::Void,
         })
     }
 
     fn block(&mut self) -> PResult<Stmt> {
-        let Token { start, .. } = self.peek()?;
+        let Token { loc, .. } = self.peek()?;
         self.expect(&TokenKind::LBrace)?;
         let stmts = self.stmts()?;
         self.expect(&TokenKind::RBrace)?;
-        let end = self.index;
-        let source = String::from_utf8_lossy(&self.source[start..end]).to_string();
         Ok(Stmt {
             kind: StmtKind::Compound(stmts),
-            start,
-            end,
-            source,
+            loc: self.source_location(loc.start),
             r#type: Type::Void,
         })
     }
 
     fn while_stmt(&mut self) -> PResult<Stmt> {
-        let Token { start, .. } = self.peek()?;
+        let Token { loc, .. } = self.peek()?;
         self.advance()?;
         self.expect(&TokenKind::LParen)?;
         let condition = self.expr()?;
         self.expect(&TokenKind::RParen)?;
         let body_stmt = self.stmt()?;
-        let end = body_stmt.end;
         Ok(Stmt {
             kind: StmtKind::While {
                 condition,
                 body: Box::new(body_stmt),
                 loop_id: None,
             },
-            start,
-            end,
-            source: self.source_slice(start, end),
+            loc: self.source_location(loc.start),
             r#type: Type::Void,
         })
     }
 
     fn do_while_stmt(&mut self) -> PResult<Stmt> {
-        let Token { start, .. } = self.peek()?;
+        let Token { loc, .. } = self.peek()?;
         self.advance()?;
         let body_stmt = self.stmt()?;
         self.expect(&TokenKind::While)?;
@@ -1341,22 +1304,19 @@ impl Parser {
         let condition = self.expr()?;
         self.expect(&TokenKind::RParen)?;
         self.expect(&TokenKind::Semicolon)?;
-        let end = self.index;
         Ok(Stmt {
             kind: StmtKind::DoWhile {
                 body: Box::new(body_stmt),
                 condition,
                 loop_id: None,
             },
-            start,
-            end,
-            source: self.source_slice(start, end),
+            loc: self.source_location(loc.start),
             r#type: Type::Void,
         })
     }
 
     fn for_stmt(&mut self) -> PResult<Stmt> {
-        let Token { start, .. } = self.peek()?;
+        let Token { loc, .. } = self.peek()?;
         self.advance()?;
         self.expect(&TokenKind::LParen)?;
 
@@ -1389,7 +1349,6 @@ impl Parser {
 
         self.expect(&TokenKind::RParen)?;
         let body_stmt = self.stmt()?;
-        let end = body_stmt.end;
 
         Ok(Stmt {
             kind: StmtKind::For {
@@ -1399,16 +1358,14 @@ impl Parser {
                 body: Box::new(body_stmt),
                 loop_id: None,
             },
-            start,
-            end,
-            source: self.source_slice(start, end),
+            loc: self.source_location(loc.start),
             r#type: Type::Void,
         })
     }
 
     fn if_stmt(&mut self) -> PResult<Stmt> {
-        let Token { start, .. } = self.peek()?;
-        self.advance()?; // if
+        let Token { loc, .. } = self.peek()?;
+        self.advance()?;
         self.expect(&TokenKind::LParen)?;
         let condition = self.expr()?;
         self.expect(&TokenKind::RParen)?;
@@ -1419,20 +1376,13 @@ impl Parser {
         } else {
             None
         };
-        let end = else_branch
-            .as_ref()
-            .map(|b| b.end)
-            .unwrap_or(then_branch.end);
-        let source = self.source_slice(start, end);
         Ok(Stmt {
             kind: StmtKind::If {
                 condition,
                 then_branch: Box::new(then_branch),
                 else_branch,
             },
-            start,
-            end,
-            source,
+            loc: self.source_location(loc.start),
             r#type: Type::Void,
         })
     }
@@ -1481,17 +1431,14 @@ impl Parser {
             let then_expr = self.assign()?;
             self.expect(&TokenKind::Colon)?;
             let else_expr = self.conditional()?;
-            let start = condition.start;
-            let end = else_expr.end;
+            let start = condition.loc.start;
             Ok(Expr {
                 kind: ExprKind::Conditional(
                     Box::new(condition),
                     Box::new(then_expr),
                     Box::new(else_expr),
                 ),
-                start,
-                end,
-                source: self.source_slice(start, end),
+                loc: self.source_location(start),
                 r#type: Type::Int,
             })
         } else {
@@ -1500,20 +1447,22 @@ impl Parser {
     }
 
     fn make_assignment_expr(&self, lhs: Expr, rhs: Expr) -> Expr {
-        let start = lhs.start;
-        let end = rhs.end;
+        let start = lhs.loc.start;
+        let end = rhs.loc.end;
         Expr {
             kind: ExprKind::Assignment(Box::new(lhs), Box::new(rhs)),
-            start,
-            end,
-            source: self.source_slice(start, end),
+            loc: SourceLocation {
+                start,
+                end,
+                source: self.source_slice(start, end),
+            },
             r#type: Type::Int,
         }
     }
 
     fn compound_assignment_rhs(&self, lhs: Expr, rhs: Expr, op: &TokenKind) -> PResult<Expr> {
-        let start = lhs.start;
-        let end = rhs.end;
+        let start = lhs.loc.start;
+        let end = rhs.loc.end;
 
         let source = self.source_slice(start, end);
 
@@ -1533,9 +1482,7 @@ impl Parser {
 
         Ok(Expr {
             kind,
-            start,
-            end,
-            source,
+            loc: SourceLocation { start, end, source },
             r#type: Type::Int,
         })
     }
@@ -1544,16 +1491,12 @@ impl Parser {
         let mut node = self.and()?;
 
         while matches!(self.peek_kind(), Some(TokenKind::Or)) {
-            let Token {
-                start, end, source, ..
-            } = self.peek()?;
+            let Token { loc, .. } = self.peek()?;
             self.advance()?;
 
             node = Expr {
                 kind: ExprKind::Or(Box::new(node), Box::new(self.and()?)),
-                start,
-                end,
-                source,
+                loc,
                 r#type: Type::Int,
             }
         }
@@ -1565,16 +1508,12 @@ impl Parser {
         let mut node = self.bit_or()?;
 
         while matches!(self.peek_kind(), Some(TokenKind::DoubleAmpersand)) {
-            let Token {
-                start, end, source, ..
-            } = self.peek()?;
+            let Token { loc, .. } = self.peek()?;
             self.advance()?;
 
             node = Expr {
                 kind: ExprKind::And(Box::new(node), Box::new(self.bit_or()?)),
-                start,
-                end,
-                source,
+                loc,
                 r#type: Type::Int,
             }
         }
@@ -1586,16 +1525,12 @@ impl Parser {
         let mut node = self.xor()?;
 
         while matches!(self.peek_kind(), Some(TokenKind::BitOr)) {
-            let Token {
-                start, end, source, ..
-            } = self.peek()?;
+            let Token { loc, .. } = self.peek()?;
             self.advance()?;
 
             node = Expr {
                 kind: ExprKind::BitOr(Box::new(node), Box::new(self.xor()?)),
-                start,
-                end,
-                source,
+                loc,
                 r#type: Type::Int,
             }
         }
@@ -1607,16 +1542,12 @@ impl Parser {
         let mut node = self.bit_and()?;
 
         while matches!(self.peek_kind(), Some(TokenKind::Xor)) {
-            let Token {
-                start, end, source, ..
-            } = self.peek()?;
+            let Token { loc, .. } = self.peek()?;
             self.advance()?;
 
             node = Expr {
                 kind: ExprKind::Xor(Box::new(node), Box::new(self.bit_and()?)),
-                start,
-                end,
-                source,
+                loc,
                 r#type: Type::Int,
             }
         }
@@ -1628,16 +1559,12 @@ impl Parser {
         let mut node = self.eq()?;
 
         while matches!(self.peek_kind(), Some(TokenKind::Ampersand)) {
-            let Token {
-                start, end, source, ..
-            } = self.peek()?;
+            let Token { loc, .. } = self.peek()?;
             self.advance()?;
 
             node = Expr {
                 kind: ExprKind::BitAnd(Box::new(node), Box::new(self.eq()?)),
-                start,
-                end,
-                source,
+                loc,
                 r#type: Type::Int,
             }
         }
@@ -1652,13 +1579,7 @@ impl Parser {
             self.peek_kind(),
             Some(TokenKind::DoubleEqual | TokenKind::NotEqual)
         ) {
-            let Token {
-                start,
-                end,
-                source,
-                kind,
-                ..
-            } = self.peek()?;
+            let Token { loc, kind, .. } = self.peek()?;
             self.advance()?;
 
             node = Expr {
@@ -1667,9 +1588,7 @@ impl Parser {
                 } else {
                     ExprKind::NotEqual(Box::new(node), Box::new(self.rel()?))
                 },
-                start,
-                end,
-                source,
+                loc,
                 r#type: Type::Int,
             }
         }
@@ -1689,13 +1608,7 @@ impl Parser {
                     | TokenKind::GreaterThanEqual
             )
         ) {
-            let Token {
-                start,
-                end,
-                source,
-                kind,
-                ..
-            } = self.peek()?;
+            let Token { loc, kind, .. } = self.peek()?;
             self.advance()?;
 
             node = Expr {
@@ -1708,9 +1621,7 @@ impl Parser {
                 } else {
                     ExprKind::GreaterThanEqual(Box::new(node), Box::new(self.shift()?))
                 },
-                start,
-                end,
-                source,
+                loc,
                 r#type: Type::Int,
             }
         }
@@ -1725,13 +1636,7 @@ impl Parser {
             self.peek_kind(),
             Some(TokenKind::LShift | TokenKind::RShift)
         ) {
-            let Token {
-                start,
-                end,
-                source,
-                kind,
-                ..
-            } = self.peek()?;
+            let Token { loc, kind, .. } = self.peek()?;
             self.advance()?;
 
             node = Expr {
@@ -1740,9 +1645,7 @@ impl Parser {
                 } else {
                     ExprKind::RightShift(Box::new(node), Box::new(self.add()?))
                 },
-                start,
-                end,
-                source,
+                loc,
                 r#type: Type::Int,
             }
         }
@@ -1754,13 +1657,7 @@ impl Parser {
         let mut node = self.mul()?;
 
         while matches!(self.peek_kind(), Some(TokenKind::Plus | TokenKind::Minus)) {
-            let Token {
-                start,
-                end,
-                source,
-                kind,
-                ..
-            } = self.peek()?;
+            let Token { loc, kind, .. } = self.peek()?;
             self.advance()?;
 
             node = Expr {
@@ -1769,9 +1666,7 @@ impl Parser {
                 } else {
                     ExprKind::Sub(Box::new(node), Box::new(self.mul()?))
                 },
-                start,
-                end,
-                source,
+                loc,
                 r#type: Type::Int,
             }
         }
@@ -1786,13 +1681,7 @@ impl Parser {
             self.peek_kind(),
             Some(TokenKind::Star | TokenKind::Slash | TokenKind::Percent)
         ) {
-            let Token {
-                start,
-                end,
-                source,
-                kind,
-                ..
-            } = self.peek()?;
+            let Token { loc, kind, .. } = self.peek()?;
             self.advance()?;
 
             node = Expr {
@@ -1803,9 +1692,7 @@ impl Parser {
                 } else {
                     ExprKind::Div(Box::new(node), Box::new(self.unary()?))
                 },
-                start,
-                end,
-                source,
+                loc,
                 r#type: Type::Int,
             }
         }
@@ -1815,7 +1702,7 @@ impl Parser {
 
     fn unary(&mut self) -> PResult<Expr> {
         if matches!(self.peek_kind(), Some(TokenKind::LParen)) && self.is_cast_expression()? {
-            let Token { start, .. } = self.peek()?;
+            let Token { loc, .. } = self.peek()?;
             self.advance()?;
             let (base_type, _) = self.parse_type_specifiers()?;
             let mut cast_type = base_type;
@@ -1828,12 +1715,9 @@ impl Parser {
             }
             self.expect(&TokenKind::RParen)?;
             let expr = self.unary()?;
-            let end = expr.end;
             return Ok(Expr {
                 kind: ExprKind::Cast(cast_type.clone(), Box::new(expr)),
-                start,
-                end,
-                source: self.source_slice(start, end),
+                loc: self.source_location(loc.start),
                 r#type: cast_type,
             });
         }
@@ -1844,100 +1728,46 @@ impl Parser {
                 self.advance()?;
                 self.unary()
             }
-            TokenKind::Minus => {
+            TokenKind::Minus
+            | TokenKind::Tilde
+            | TokenKind::Not
+            | TokenKind::Ampersand
+            | TokenKind::Star
+            | TokenKind::Increment
+            | TokenKind::Decrement => {
                 self.advance()?;
                 let expr = self.unary()?;
-                let start = token.start;
-                let end = expr.end;
+                let start = token.loc.start;
+                let end = expr.loc.end;
                 Ok(Expr {
-                    kind: ExprKind::Neg(Box::new(expr)),
-                    start,
-                    end,
-                    source: self.source_slice(start, end),
-                    r#type: Type::Int,
-                })
-            }
-            TokenKind::Tilde => {
-                self.advance()?;
-                let expr = self.unary()?;
-                let start = token.start;
-                let end = expr.end;
-                Ok(Expr {
-                    kind: ExprKind::BitNot(Box::new(expr)),
-                    start,
-                    end,
-                    source: self.source_slice(start, end),
-                    r#type: Type::Int,
-                })
-            }
-            TokenKind::Not => {
-                self.advance()?;
-                let expr = self.unary()?;
-                let start = token.start;
-                let end = expr.end;
-                Ok(Expr {
-                    kind: ExprKind::Not(Box::new(expr)),
-                    start,
-                    end,
-                    source: self.source_slice(start, end),
-                    r#type: Type::Int,
-                })
-            }
-            TokenKind::Ampersand => {
-                self.advance()?;
-                let expr = self.unary()?;
-                let start = token.start;
-                let end = expr.end;
-                Ok(Expr {
-                    kind: ExprKind::AddrOf(Box::new(expr)),
-                    start,
-                    end,
-                    source: self.source_slice(start, end),
-                    r#type: Type::Int,
-                })
-            }
-            TokenKind::Star => {
-                self.advance()?;
-                let expr = self.unary()?;
-                let start = token.start;
-                let end = expr.end;
-                Ok(Expr {
-                    kind: ExprKind::Dereference(Box::new(expr)),
-                    start,
-                    end,
-                    source: self.source_slice(start, end),
-                    r#type: Type::Int,
-                })
-            }
-            TokenKind::Increment => {
-                self.advance()?;
-                let expr = self.unary()?;
-                let start = token.start;
-                let end = expr.end;
-                Ok(Expr {
-                    kind: ExprKind::PreIncrement(Box::new(expr)),
-                    start,
-                    end,
-                    source: self.source_slice(start, end),
-                    r#type: Type::Int,
-                })
-            }
-            TokenKind::Decrement => {
-                self.advance()?;
-                let expr = self.unary()?;
-                let start = token.start;
-                let end = expr.end;
-                Ok(Expr {
-                    kind: ExprKind::PreDecrement(Box::new(expr)),
-                    start,
-                    end,
-                    source: self.source_slice(start, end),
+                    kind: if token.kind == TokenKind::Minus {
+                        ExprKind::Neg(Box::new(expr))
+                    } else if token.kind == TokenKind::Tilde {
+                        ExprKind::BitNot(Box::new(expr))
+                    } else if token.kind == TokenKind::Not {
+                        ExprKind::Not(Box::new(expr))
+                    } else if token.kind == TokenKind::Ampersand {
+                        ExprKind::AddrOf(Box::new(expr))
+                    } else if token.kind == TokenKind::Star {
+                        ExprKind::Dereference(Box::new(expr))
+                    } else if token.kind == TokenKind::Increment {
+                        ExprKind::PreIncrement(Box::new(expr))
+                    } else if token.kind == TokenKind::Decrement {
+                        ExprKind::PreDecrement(Box::new(expr))
+                    } else {
+                        unreachable!()
+                    },
+                    loc: SourceLocation {
+                        start,
+                        end,
+                        source: self.source_slice(start, end),
+                    },
                     r#type: Type::Int,
                 })
             }
             TokenKind::Sizeof => {
                 self.advance()?;
-                let start = token.start;
+                let start = token.loc.start;
 
                 if self.is_sizeof_type()? {
                     self.expect(&TokenKind::LParen)?;
@@ -1948,25 +1778,19 @@ impl Parser {
                         ty = Type::Pointer(Box::new(ty));
                     }
                     self.expect(&TokenKind::RParen)?;
-                    let end = self.index;
                     return Ok(Expr {
                         kind: ExprKind::SizeOfType(ty.clone()),
-                        start,
-                        end,
-                        source: self.source_slice(start, end),
+                        loc: self.source_location(start),
                         r#type: Type::ULong,
                     });
                 }
 
                 let expr = self.unary()?;
-                let end = expr.end;
-                return Ok(Expr {
+                Ok(Expr {
                     kind: ExprKind::SizeOf(Box::new(expr)),
-                    start,
-                    end,
-                    source: self.source_slice(start, end),
+                    loc: self.source_location(start),
                     r#type: Type::ULong,
-                });
+                })
             }
             _ => self.postfix(),
         }
@@ -1978,31 +1802,16 @@ impl Parser {
         loop {
             let token = self.peek()?;
             match token.kind {
-                TokenKind::Increment => {
+                TokenKind::Increment | TokenKind::Decrement => {
                     self.advance()?;
-                    let start = node.start;
-                    let end = self.index;
-                    let source = self.source_slice(start, end);
-                    let boxed = Box::new(node);
+                    let boxed = Box::new(node.clone());
                     node = Expr {
-                        kind: ExprKind::PostIncrement(boxed),
-                        start,
-                        end,
-                        source,
-                        r#type: Type::Int,
-                    };
-                }
-                TokenKind::Decrement => {
-                    self.advance()?;
-                    let start = node.start;
-                    let end = self.index;
-                    let source = self.source_slice(start, end);
-                    let boxed = Box::new(node);
-                    node = Expr {
-                        kind: ExprKind::PostDecrement(boxed),
-                        start,
-                        end,
-                        source,
+                        kind: if token.kind == TokenKind::Increment {
+                            ExprKind::PostIncrement(boxed)
+                        } else {
+                            ExprKind::PostDecrement(boxed)
+                        },
+                        loc: self.source_location(node.loc.start),
                         r#type: Type::Int,
                     };
                 }
@@ -2010,29 +1819,23 @@ impl Parser {
                     self.advance()?;
                     let index_expr = self.expr()?;
                     self.expect(&TokenKind::RBracket)?;
-                    let start = node.start;
-                    let end = self.index;
-                    let source = self.source_slice(start, end);
+                    let start = node.loc.start;
                     let base_expr = Box::new(node);
                     let index_boxed = Box::new(index_expr);
                     let add_expr = Expr {
                         kind: ExprKind::Add(base_expr, index_boxed),
-                        start,
-                        end,
-                        source: source.clone(),
+                        loc: self.source_location(start),
                         r#type: Type::Int,
                     };
                     let deref_expr = Expr {
                         kind: ExprKind::Dereference(Box::new(add_expr)),
-                        start,
-                        end,
-                        source: source.clone(),
+                        loc: self.source_location(start),
                         r#type: Type::Int,
                     };
                     node = deref_expr;
                 }
                 TokenKind::LParen => {
-                    let start = node.start;
+                    let start = node.loc.start;
                     let func_name = match &node.kind {
                         ExprKind::Var(name) => name.clone(),
                         kind => return Err(ParserError::InvalidFunctionCallTarget(kind.clone())),
@@ -2040,13 +1843,9 @@ impl Parser {
                     self.advance()?;
                     let args = self.arguments()?;
                     self.expect(&TokenKind::RParen)?;
-                    let end = self.index;
-                    let source = self.source_slice(start, end);
                     node = Expr {
                         kind: ExprKind::FunctionCall(func_name, args),
-                        start,
-                        end,
-                        source,
+                        loc: self.source_location(start),
                         r#type: Type::Int,
                     };
                 }
@@ -2061,9 +1860,7 @@ impl Parser {
                         }
                         _ => return Err(ParserError::ExpectedIdentifier),
                     };
-                    let start = node.start;
-                    let end = member_token.end;
-                    let source = self.source_slice(start, end);
+                    let start = node.loc.start;
                     node = Expr {
                         kind: ExprKind::Member {
                             base: Box::new(node),
@@ -2071,9 +1868,7 @@ impl Parser {
                             offset: 0,
                             is_arrow,
                         },
-                        start,
-                        end,
-                        source,
+                        loc: self.source_location(start),
                         r#type: Type::Int,
                     };
                 }
@@ -2085,22 +1880,14 @@ impl Parser {
     }
 
     fn primary(&mut self) -> PResult<Expr> {
-        let Token {
-            start,
-            end,
-            kind,
-            source,
-            ..
-        } = self.peek()?;
+        let Token { loc, kind, .. } = self.peek()?;
 
         match kind.clone() {
             TokenKind::Integer(n) => {
                 self.advance()?;
                 Ok(Expr {
                     kind: ExprKind::Constant(Const::Int(n as i32)),
-                    start,
-                    end,
-                    source,
+                    loc: self.source_location(loc.start),
                     r#type: Type::Int,
                 })
             }
@@ -2108,9 +1895,7 @@ impl Parser {
                 self.advance()?;
                 Ok(Expr {
                     kind: ExprKind::Constant(Const::Long(n)),
-                    start,
-                    end,
-                    source,
+                    loc: self.source_location(loc.start),
                     r#type: Type::Long,
                 })
             }
@@ -2118,9 +1903,7 @@ impl Parser {
                 self.advance()?;
                 Ok(Expr {
                     kind: ExprKind::Constant(Const::UInt(n)),
-                    start,
-                    end,
-                    source,
+                    loc: self.source_location(loc.start),
                     r#type: Type::UInt,
                 })
             }
@@ -2128,9 +1911,7 @@ impl Parser {
                 self.advance()?;
                 Ok(Expr {
                     kind: ExprKind::Constant(Const::ULong(n)),
-                    start,
-                    end,
-                    source,
+                    loc: self.source_location(loc.start),
                     r#type: Type::ULong,
                 })
             }
@@ -2138,9 +1919,7 @@ impl Parser {
                 self.advance()?;
                 Ok(Expr {
                     kind: ExprKind::Constant(Const::Double(n)),
-                    start,
-                    end,
-                    source,
+                    loc: self.source_location(loc.start),
                     r#type: Type::Double,
                 })
             }
@@ -2148,32 +1927,32 @@ impl Parser {
                 self.advance()?;
                 Ok(Expr {
                     kind: ExprKind::Constant(Const::Char(value)),
-                    start,
-                    end,
-                    source,
+                    loc: self.source_location(loc.start),
                     r#type: Type::Int,
                 })
             }
             TokenKind::String(value) => {
                 self.advance()?;
                 let mut combined_value = value;
-                let mut final_end = end;
+                let mut final_end = loc.end;
                 while self.pos < self.tokens.len() {
                     let next_token = self.peek()?;
                     if let TokenKind::String(next_value) = next_token.kind.clone() {
                         combined_value.push_str(&next_value);
-                        final_end = next_token.end;
+                        final_end = next_token.loc.end;
                         self.advance()?;
                     } else {
                         break;
                     }
                 }
-                let combined_source = self.source_slice(start, final_end);
+                let combined_source = self.source_slice(loc.start, final_end);
                 Ok(Expr {
                     kind: ExprKind::String(combined_value),
-                    start,
-                    end: final_end,
-                    source: combined_source,
+                    loc: SourceLocation {
+                        start: loc.start,
+                        end: final_end,
+                        source: combined_source,
+                    },
                     r#type: Type::Pointer(Box::new(Type::Char)),
                 })
             }
@@ -2181,9 +1960,7 @@ impl Parser {
                 self.advance()?;
                 Ok(Expr {
                     kind: ExprKind::Var(name),
-                    start,
-                    end,
-                    source,
+                    loc: self.source_location(loc.start),
                     r#type: Type::Int,
                 })
             }
@@ -2296,7 +2073,7 @@ impl Parser {
         if self.pos >= self.tokens.len() {
             return Err(ParserError::UnexpectedEof(""));
         }
-        self.index = self.peek()?.end;
+        self.index = self.peek()?.loc.end;
         self.pos += 1;
         Ok(())
     }
@@ -2319,5 +2096,12 @@ impl Parser {
 
     fn source_slice(&self, start: usize, end: usize) -> String {
         String::from_utf8_lossy(&self.source[start..end]).to_string()
+    }
+
+    // always call source_location at the end
+    fn source_location(&self, start: usize) -> SourceLocation {
+        let end = self.index;
+        let source = self.source_slice(start, end);
+        SourceLocation { start, end, source }
     }
 }
