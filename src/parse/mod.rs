@@ -1,5 +1,3 @@
-use thiserror::Error;
-
 use crate::{
     semantic::structs,
     tokenize::{Token, TokenKind},
@@ -7,97 +5,12 @@ use crate::{
 use std::convert::TryFrom;
 use std::{fmt, mem};
 
+pub(crate) mod error;
+use error::PResult;
+use error::ParserError;
+
 pub(crate) type Expr = Node<ExprKind>;
 pub(crate) type Stmt = Node<StmtKind>;
-
-#[derive(Error, Debug, Clone)]
-pub(crate) enum ParserError {
-    #[error("unexpected end of input{0}")]
-    UnexpectedEof(&'static str),
-
-    #[error("expected token {0:?}, found {1:?}")]
-    ExpectedToken(TokenKind, Option<TokenKind>),
-
-    #[error("not at end of program (next token: {0:?})")]
-    NotAtEnd(Option<TokenKind>),
-
-    #[error("storage class specifiers are not allowed here")]
-    StorageNotAllowedHere,
-
-    #[error("multiple storage class specifiers in declaration")]
-    MultipleStorageClasses,
-
-    #[error("unsupported type specifier {0:?}")]
-    UnsupportedTypeSpecifier(TokenKind),
-
-    #[error("duplicate type specifier '{0}'")]
-    DuplicateTypeSpecifier(&'static str),
-
-    #[error("conflicting type specifiers '{0}' and '{1}'")]
-    ConflictingTypeSpecifiers(&'static str, &'static str),
-
-    #[error("'void' cannot be combined with other type specifiers")]
-    VoidCannotCombine,
-
-    #[error("'double' cannot be combined with other type specifiers")]
-    DoubleCannotCombine,
-
-    #[error("declaration missing type specifier")]
-    MissingTypeSpecifier,
-
-    #[error("expected declaration specifiers")]
-    ExpectedDeclSpecifiers,
-
-    #[error("array size must be non-negative")]
-    NegativeArraySize,
-
-    #[error("array size does not fit in usize ({0})")]
-    ArraySizeTooLarge(i128),
-
-    #[error("expected constant array size, found {0:?}")]
-    ExpectedConstArraySize(TokenKind),
-
-    #[error("'void' parameter must be the only parameter")]
-    VoidOnlyParameter,
-
-    #[error("variable declared with void type")]
-    VariableWithVoidType,
-
-    #[error("function declarations are not allowed in block scope")]
-    FunctionDeclInBlockScope,
-
-    #[error("variable declared with function type")]
-    VariableWithFunctionType,
-
-    #[error("invalid function call target: {0:?}")]
-    InvalidFunctionCallTarget(ExprKind),
-
-    #[error("unsupported compound assignment token: {0:?}")]
-    UnsupportedCompoundAssign(TokenKind),
-
-    #[error("unsupported cast target: void")]
-    UnsupportedCastTargetVoid,
-
-    #[error("expected identifier or '(' in declarator, found {0:?}")]
-    ExpectedIdentOrParen(TokenKind),
-
-    #[error("Expected primary expression, found {0:?}")]
-    ExpectedPrimary(TokenKind),
-
-    #[error("expected identifier")]
-    ExpectedIdentifier,
-}
-
-type PResult<T> = Result<T, ParserError>;
-
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) struct Program(pub(crate) Vec<Decl>);
-
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) enum StorageClass {
-    Static,
-    Extern,
-}
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum ExprKind {
@@ -151,6 +64,15 @@ pub(crate) enum ExprKind {
     LeftShift(Box<Expr>, Box<Expr>),
     RightShift(Box<Expr>, Box<Expr>),
     Assignment(Box<Expr>, Box<Expr>),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Program(pub(crate) Vec<Decl>);
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum StorageClass {
+    Static,
+    Extern,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -252,17 +174,6 @@ pub(crate) enum Width {
     W16,
     W32,
     W64,
-}
-
-impl Width {
-    pub(crate) fn suffix(&self) -> char {
-        match self {
-            Width::W8 => 'b',
-            Width::W16 => 'w',
-            Width::W32 => 'l',
-            Width::W64 => 'q',
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -412,57 +323,6 @@ impl Type {
             Type::Fn(_, _) => {
                 panic!("No size");
             }
-        }
-    }
-
-    pub(crate) fn integer_promotion(&self) -> Type {
-        use Type::*;
-        match self {
-            Char | UChar => Int,
-            t if t.is_integer() => self.clone(),
-            _ => panic!("Invalid integer promotion type"),
-        }
-    }
-
-    pub(crate) fn working_type(&self, rhs: Type) -> Type {
-        use Type::*;
-
-        let a = self.integer_promotion();
-        let b = rhs.integer_promotion();
-        if a == b {
-            return a;
-        }
-
-        let wa = a.width();
-        let wb = b.width();
-        let sa = a.is_signed();
-        let sb = b.is_signed();
-
-        let rank = |w: Width| match w {
-            Width::W8 => 1,
-            Width::W16 => 2,
-            Width::W32 => 3,
-            Width::W64 => 4,
-        };
-
-        if rank(wa) != rank(wb) {
-            return match (wa, sa, wb, sb) {
-                (Width::W64, true, _, _) => Long,
-                (Width::W64, false, _, _) => ULong,
-                (_, _, Width::W64, true) => Long,
-                (_, _, Width::W64, false) => ULong,
-                (Width::W32, true, Width::W16 | Width::W8, _) => Int,
-                (Width::W32, false, Width::W16 | Width::W8, _) => UInt,
-                (Width::W16 | Width::W8, _, Width::W32, true) => Int,
-                (Width::W16 | Width::W8, _, Width::W32, false) => UInt,
-                _ => unreachable!(),
-            };
-        }
-
-        match (wa, sa, sb) {
-            (Width::W64, false, _) | (Width::W64, _, false) => ULong,
-            (Width::W32, false, _) | (Width::W32, _, false) => UInt,
-            _ => Long,
         }
     }
 
