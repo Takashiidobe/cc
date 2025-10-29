@@ -168,7 +168,6 @@ pub(crate) enum ForInit {
     Expr(Option<Expr>),
 }
 
-
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum Type {
     Char,
@@ -614,7 +613,8 @@ impl TypeSpecifierState {
 }
 
 impl Parser {
-    pub(crate) fn new(source: Vec<u8>, tokens: Vec<Token>) -> Self {
+    pub(crate) fn new(tokens: Vec<Token>) -> Self {
+        let source = tokens.iter().flat_map(|t| t.loc.source.bytes()).collect();
         Self {
             source,
             tokens,

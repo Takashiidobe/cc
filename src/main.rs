@@ -46,7 +46,7 @@ fn main() -> anyhow::Result<(), Error> {
         if args.verbose {
             eprintln!("{:?}", &tokens);
         }
-        let mut parser = Parser::new(source.bytes().collect(), tokens);
+        let mut parser = Parser::new(tokens);
         let ast = parser.parse();
         eprintln!("{:?}", ast);
     }
@@ -62,7 +62,7 @@ fn main() -> anyhow::Result<(), Error> {
         let mut preprocessor = Preprocessor::new(vec![]);
         let tokens = preprocessor.expand_file(Path::new(&input_path))?;
 
-        let mut parser = Parser::new(source.bytes().collect(), tokens);
+        let mut parser = Parser::new(tokens);
 
         let ast = parser.parse()?;
         if args.verbose {
