@@ -254,7 +254,7 @@ impl<W: Write> Codegen<W> {
             )?,
             Type::Double => writeln!(self.buf, "  xorpd {}, {}", FloatReg::XMM0, FloatReg::XMM0)?,
             Type::Void => {}
-            Type::FunType(_, _) => {
+            Type::Fn(_, _) => {
                 return Err(CodegenError::UnsupportedFunctionReturnType(ty.clone()));
             }
             Type::Array(_, _) | Type::IncompleteArray(_) => {
@@ -778,7 +778,7 @@ impl<W: Write> Codegen<W> {
                     | Type::IncompleteArray(_)
                     | Type::Double
                     | Type::Pointer(_)
-                    | Type::FunType(_, _)
+                    | Type::Fn(_, _)
                     | Type::Struct(_) => {
                         return Err(CodegenError::DivisionUnsupportedForType(ty));
                     }
@@ -1016,7 +1016,7 @@ impl<W: Write> Codegen<W> {
                 Ok(())
             }
             Type::Void
-            | Type::FunType(_, _)
+            | Type::Fn(_, _)
             | Type::Array(_, _)
             | Type::IncompleteArray(_)
             | Type::Struct(_) => Err(CodegenError::CopyToOffsetUnsupported(ty)),
@@ -1050,7 +1050,7 @@ impl<W: Write> Codegen<W> {
                 )?;
                 self.store_reg_into_value(Reg::R10, dst)
             }
-            Type::FunType(_, _)
+            Type::Fn(_, _)
             | Type::Array(_, _)
             | Type::IncompleteArray(_)
             | Type::Struct(_) => Err(CodegenError::CopyFromOffsetUnsupported(ty)),
@@ -1513,7 +1513,7 @@ impl<W: Write> Codegen<W> {
             Type::Int | Type::UInt => Ok("movl"),
             Type::Long | Type::ULong | Type::Void | Type::Pointer(_) => Ok("movq"),
             Type::Double => Err(CodegenError::MovUnsupported(ty.clone())),
-            Type::FunType(_, _)
+            Type::Fn(_, _)
             | Type::Array(_, _)
             | Type::IncompleteArray(_)
             | Type::Struct(_) => Err(CodegenError::MovUnsupported(ty.clone())),

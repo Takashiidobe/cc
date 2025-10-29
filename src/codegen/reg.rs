@@ -79,7 +79,7 @@ impl Reg {
             Type::Int | Type::UInt => Ok(self.reg_name32()),
             Type::Long | Type::ULong | Type::Void | Type::Pointer(_) => Ok(self.reg_name64()),
             Type::Double
-            | Type::FunType(_, _)
+            | Type::Fn(_, _)
             | Type::Array(_, _)
             | Type::IncompleteArray(_)
             | Type::Struct(_) => Err(CodegenError::GprRequestedFor(ty.clone())),

@@ -42,15 +42,12 @@ impl StructLabeler {
     fn visit_struct_decl(&mut self, decl: &StructDeclaration) -> Result<(), StructLabelerError> {
         let tag = decl.tag.clone();
         if decl.members.is_empty() {
-            self.structs.entry(tag).or_insert_with(StructInfo::default);
+            self.structs.entry(tag).or_default();
             return Ok(());
         }
 
         {
-            let entry = self
-                .structs
-                .entry(tag.clone())
-                .or_insert_with(StructInfo::default);
+            let entry = self.structs.entry(tag.clone()).or_default();
             if entry.defined {
                 return Err(StructLabelerError::DuplicateDefinition(tag));
             }
@@ -233,10 +230,7 @@ impl StructLabeler {
     fn note_type(&mut self, ty: &Type, require_complete: bool) -> Result<(), StructLabelerError> {
         match ty {
             Type::Struct(tag) => {
-                let entry = self
-                    .structs
-                    .entry(tag.clone())
-                    .or_insert_with(StructInfo::default);
+                let entry = self.structs.entry(tag.clone()).or_default();
                 if require_complete && !entry.defined {
                     return Err(StructLabelerError::IncompleteStruct(tag.clone()));
                 }
@@ -247,7 +241,7 @@ impl StructLabeler {
             Type::Array(inner, _) | Type::IncompleteArray(inner) => {
                 self.note_type(inner, true)?;
             }
-            Type::FunType(params, ret) => {
+            Type::Fn(params, ret) => {
                 for param in params {
                     self.note_type(param, true)?;
                 }

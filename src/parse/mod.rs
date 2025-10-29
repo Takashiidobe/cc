@@ -282,7 +282,7 @@ pub(crate) enum Type {
     Pointer(Box<Type>),
     Array(Box<Type>, usize),
     IncompleteArray(Box<Type>),
-    FunType(Vec<Type>, Box<Type>),
+    Fn(Vec<Type>, Box<Type>),
 }
 
 impl fmt::Display for Type {
@@ -302,7 +302,7 @@ impl fmt::Display for Type {
             Type::Pointer(t) => f.write_str(&format!("*{t}")),
             Type::Array(t, len) => f.write_str(&format!("{t}[{len}]")),
             Type::IncompleteArray(t) => f.write_str(&format!("{t}[]")),
-            Type::FunType(_, _) => f.write_str("function"),
+            Type::Fn(_, _) => f.write_str("function"),
         }
     }
 }
@@ -322,7 +322,7 @@ impl Type {
             | Type::Struct(_)
             | Type::Double
             | Type::Pointer(_)
-            | Type::FunType(_, _)
+            | Type::Fn(_, _)
             | Type::Array(_, _)
             | Type::IncompleteArray(_) => panic!("Cannot be compared"),
         }
@@ -332,11 +332,11 @@ impl Type {
     }
 
     pub(crate) fn is_unsigned(&self) -> bool {
-        matches!(self, Type::UChar | Type::UInt | Type::ULong)
+        matches!(self, Type::UChar | Type::UShort | Type::UInt | Type::ULong)
     }
 
     pub(crate) fn is_signed(&self) -> bool {
-        self.is_integer() && !self.is_unsigned()
+        matches!(self, Type::Char | Type::Short | Type::Int | Type::Long)
     }
 
     pub(crate) fn is_pointer(&self) -> bool {
@@ -344,18 +344,7 @@ impl Type {
     }
 
     pub(crate) fn is_integer(&self) -> bool {
-        matches!(
-            self,
-            Type::Char
-                | Type::SChar
-                | Type::UChar
-                | Type::Short
-                | Type::UShort
-                | Type::Int
-                | Type::UInt
-                | Type::Long
-                | Type::ULong
-        )
+        self.is_unsigned() || self.is_signed()
     }
 
     pub(crate) fn width(&self) -> Width {
@@ -366,7 +355,7 @@ impl Type {
             Int | UInt => Width::W32,
             Long | ULong => Width::W64,
             Double => todo!(),
-            Void | Struct(_) | Pointer(_) | Array(_, _) | IncompleteArray(_) | FunType(_, _) => {
+            Void | Struct(_) | Pointer(_) | Array(_, _) | IncompleteArray(_) | Fn(_, _) => {
                 todo!("invalid type size")
             }
         }
@@ -380,7 +369,7 @@ impl Type {
             Int | UInt => 32,
             Long | ULong | Double => 64,
             Void => 0,
-            Struct(_) | Pointer(_) | Array(_, _) | IncompleteArray(_) | FunType(_, _) => {
+            Struct(_) | Pointer(_) | Array(_, _) | IncompleteArray(_) | Fn(_, _) => {
                 todo!("invalid type size")
             }
         }
@@ -400,7 +389,7 @@ impl Type {
             Type::Struct(tag) => structs::get_struct_layout(tag)
                 .map(|layout| layout.size)
                 .unwrap_or_else(|| panic!("struct '{tag}' layout not available")),
-            Type::FunType(_, _) => {
+            Type::Fn(_, _) => {
                 panic!("No size");
             }
         }
@@ -420,7 +409,7 @@ impl Type {
             Type::Struct(tag) => structs::get_struct_layout(tag)
                 .map(|layout| layout.align)
                 .unwrap_or_else(|| panic!("struct '{tag}' layout not available")),
-            Type::FunType(_, _) => {
+            Type::Fn(_, _) => {
                 panic!("No size");
             }
         }
@@ -501,6 +490,22 @@ pub(crate) enum Const {
     Long(i64),
     ULong(u64),
     Double(f64),
+}
+
+impl Const {
+    pub(crate) fn r#type(&self) -> Type {
+        match self {
+            Const::Char(_) => Type::Int,
+            Const::Short(_) => Type::Short,
+            Const::UShort(_) => Type::UShort,
+            Const::UChar(_) => Type::UInt,
+            Const::Int(_) => Type::Int,
+            Const::Long(_) => Type::Long,
+            Const::UInt(_) => Type::UInt,
+            Const::ULong(_) => Type::ULong,
+            Const::Double(_) => Type::Double,
+        }
+    }
 }
 
 impl fmt::Display for Const {
@@ -610,7 +615,7 @@ impl TypeExpr {
             TypeExpr::Function { params, ret } => {
                 let param_types = params.iter().map(|p| p.r#type.clone()).collect();
                 let return_type = ret.apply(base);
-                Type::FunType(param_types, Box::new(return_type))
+                Type::Fn(param_types, Box::new(return_type))
             }
         }
     }
@@ -906,7 +911,7 @@ impl Parser {
             let (base_type, _) = self.parse_type_specifiers()?;
             let declarator = self.parse_declarator()?;
             let member_type = declarator.type_expr.apply(base_type);
-            if matches!(member_type, Type::FunType(_, _)) {
+            if matches!(member_type, Type::Fn(_, _)) {
                 return Err(ParserError::VariableWithFunctionType);
             }
             self.expect(&TokenKind::Semicolon)?;
@@ -1052,21 +1057,21 @@ impl Parser {
         let Token { loc, .. } = self.peek()?;
         let (base_type, storage_class, struct_decl) = self.parse_specifiers()?;
 
-        if matches!(self.peek_kind(), Some(TokenKind::Semicolon)) {
-            if let Type::Struct(tag) = &base_type {
-                self.advance()?;
-                let decl = match struct_decl {
-                    Some(decl) => decl,
-                    None => StructDeclaration {
-                        tag: tag.clone(),
-                        members: Vec::new(),
-                    },
-                };
-                return Ok(Decl {
-                    kind: DeclKind::Struct(decl),
-                    loc: self.source_location(loc.start),
-                });
-            }
+        if matches!(self.peek_kind(), Some(TokenKind::Semicolon))
+            && let Type::Struct(tag) = &base_type
+        {
+            self.advance()?;
+            let decl = match struct_decl {
+                Some(decl) => decl,
+                None => StructDeclaration {
+                    tag: tag.clone(),
+                    members: Vec::new(),
+                },
+            };
+            return Ok(Decl {
+                kind: DeclKind::Struct(decl),
+                loc: self.source_location(loc.start),
+            });
         }
         let declarator = self.parse_declarator()?;
         let name = declarator.name.clone();
@@ -1123,7 +1128,7 @@ impl Parser {
         ty: Type,
         storage_class: Option<StorageClass>,
     ) -> PResult<Decl> {
-        if matches!(ty, Type::FunType(_, _)) {
+        if matches!(ty, Type::Fn(_, _)) {
             return Err(ParserError::VariableWithFunctionType);
         }
 
@@ -1174,7 +1179,7 @@ impl Parser {
         if var_type.is_void() {
             return Err(ParserError::VariableWithVoidType);
         }
-        if matches!(var_type, Type::FunType(_, _)) {
+        if matches!(var_type, Type::Fn(_, _)) {
             return Err(ParserError::FunctionDeclInBlockScope);
         }
         let init = if matches!(self.peek_kind(), Some(TokenKind::Equal)) {
@@ -2002,7 +2007,7 @@ impl Parser {
         }
 
         let mut clone = self.clone();
-        clone.advance()?; // consume '('
+        clone.advance()?;
 
         let parse_result = clone.parse_type_specifiers();
         let _ = match parse_result {

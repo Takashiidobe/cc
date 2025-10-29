@@ -496,7 +496,7 @@ impl TackyGen {
                 Type::Double => unreachable!(),
                 Type::Void => return Err(IRError::BadConstTarget(Type::Void)),
                 Type::Pointer(_) => return Err(IRError::BadFloatConstTarget("pointer")),
-                Type::FunType(_, _) => return Err(IRError::BadFloatConstTarget("function type")),
+                Type::Fn(_, _) => return Err(IRError::BadFloatConstTarget("function type")),
                 Type::Array(_, _) => return Err(IRError::BadFloatConstTarget("array type")),
                 Type::IncompleteArray(_) => {
                     return Err(IRError::BadFloatConstTarget("incomplete array type"));
@@ -544,7 +544,7 @@ impl TackyGen {
             Type::Pointer(_) => {
                 return Err(IRError::BadFloatConstTarget("pointer from integer const"));
             }
-            Type::FunType(_, _) => {
+            Type::Fn(_, _) => {
                 return Err(IRError::BadFloatConstTarget("function from integer const"));
             }
             Type::Array(_, _) => {
@@ -1640,7 +1640,7 @@ impl TackyGen {
                 });
             }
             Type::Void => return Err(IRError::Generic("cannot increment void")),
-            Type::FunType(_, _) => {
+            Type::Fn(_, _) => {
                 return Err(IRError::Generic("function type increment not supported"));
             }
             Type::Array(_, _) | Type::IncompleteArray(_) => {

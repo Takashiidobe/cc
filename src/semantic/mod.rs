@@ -251,7 +251,7 @@ impl SemanticAnalyzer {
                 ty
             ))),
             Type::Pointer(_) => Ok((8, 8)),
-            Type::FunType(_, _) => Err(SemanticError::Unsupported(format!(
+            Type::Fn(_, _) => Err(SemanticError::Unsupported(format!(
                 "cannot determine size of function type `{}`",
                 ty
             ))),
@@ -619,17 +619,7 @@ impl SemanticAnalyzer {
 
         let result: Expr = match kind {
             ExprKind::Constant(c) => {
-                let ty = match &c {
-                    Const::Char(_) => Type::Int,
-                    Const::Short(_) => Type::Short,
-                    Const::UShort(_) => Type::UShort,
-                    Const::UChar(_) => Type::UInt,
-                    Const::Int(_) => Type::Int,
-                    Const::Long(_) => Type::Long,
-                    Const::UInt(_) => Type::UInt,
-                    Const::ULong(_) => Type::ULong,
-                    Const::Double(_) => Type::Double,
-                };
+                let ty = c.r#type();
                 Expr {
                     kind: ExprKind::Constant(c),
                     loc,
@@ -649,8 +639,8 @@ impl SemanticAnalyzer {
                     r#type: symbol.ty.clone(),
                 }
             }
-            ExprKind::SizeOf(expr0) => {
-                let analyzed = self.analyze_expr_no_decay(*expr0)?;
+            ExprKind::SizeOf(expr) => {
+                let analyzed = self.analyze_expr_no_decay(*expr)?;
                 let size = self.size_of_type(&analyzed.r#type)?;
                 Expr {
                     kind: ExprKind::Constant(Const::ULong(size)),
@@ -694,9 +684,9 @@ impl SemanticAnalyzer {
                     r#type: signature.return_type,
                 }
             }
-            ExprKind::Cast(target, expr0) => {
+            ExprKind::Cast(target, expr) => {
                 // Analyze source first so we can give a precise from->to in the error.
-                let expr1 = self.analyze_expr(*expr0)?;
+                let expr1 = self.analyze_expr(*expr)?;
                 // Forbid casting to arrays
                 if Self::is_array_type(&target) {
                     return Err(SemanticError::CastToError(
@@ -714,8 +704,8 @@ impl SemanticAnalyzer {
             }
             ExprKind::Neg(expr) => self.analyze_arithmetic_unary(*expr, loc, ExprKind::Neg)?,
             ExprKind::BitNot(expr) => self.analyze_integer_unary(*expr, loc, ExprKind::BitNot)?,
-            ExprKind::Not(expr0) => {
-                let expr1 = self.analyze_expr(*expr0)?;
+            ExprKind::Not(expr) => {
+                let expr1 = self.analyze_expr(*expr)?;
                 self.ensure_condition_type(&expr1.r#type, "logical not")?;
                 Expr {
                     kind: ExprKind::Not(Box::new(expr1)),
@@ -723,8 +713,8 @@ impl SemanticAnalyzer {
                     r#type: Type::Int,
                 }
             }
-            ExprKind::AddrOf(expr0) => {
-                let expr1 = self.analyze_expr_no_decay(*expr0)?;
+            ExprKind::AddrOf(expr) => {
+                let expr1 = self.analyze_expr_no_decay(*expr)?;
                 self.ensure_lvalue(&expr1, "address-of operand")?;
                 let ty = Type::Pointer(Box::new(expr1.r#type.clone()));
                 Expr {
@@ -733,8 +723,8 @@ impl SemanticAnalyzer {
                     r#type: ty,
                 }
             }
-            ExprKind::Dereference(expr0) => {
-                let expr1 = self.analyze_expr(*expr0)?;
+            ExprKind::Dereference(expr) => {
+                let expr1 = self.analyze_expr(*expr)?;
                 let ty = match &expr1.r#type {
                     Type::Pointer(inner) => match inner.as_ref() {
                         Type::Void => {
@@ -907,8 +897,8 @@ impl SemanticAnalyzer {
                     r#type: lhs_type,
                 }
             }
-            ExprKind::PreIncrement(expr0) => {
-                let expr1 = self.analyze_expr_no_decay(*expr0)?;
+            ExprKind::PreIncrement(expr) => {
+                let expr1 = self.analyze_expr_no_decay(*expr)?;
                 self.ensure_lvalue(&expr1, "pre-increment target")?;
                 self.ensure_numeric_type(&expr1.r#type, "pre-increment operand")?;
                 let ty = expr1.r#type.clone();
@@ -918,8 +908,8 @@ impl SemanticAnalyzer {
                     r#type: ty,
                 }
             }
-            ExprKind::PreDecrement(expr0) => {
-                let expr1 = self.analyze_expr_no_decay(*expr0)?;
+            ExprKind::PreDecrement(expr) => {
+                let expr1 = self.analyze_expr_no_decay(*expr)?;
                 self.ensure_lvalue(&expr1, "pre-decrement target")?;
                 self.ensure_numeric_type(&expr1.r#type, "pre-decrement operand")?;
                 let ty = expr1.r#type.clone();
@@ -929,8 +919,8 @@ impl SemanticAnalyzer {
                     r#type: ty,
                 }
             }
-            ExprKind::PostIncrement(expr0) => {
-                let expr1 = self.analyze_expr_no_decay(*expr0)?;
+            ExprKind::PostIncrement(expr) => {
+                let expr1 = self.analyze_expr_no_decay(*expr)?;
                 self.ensure_lvalue(&expr1, "post-increment target")?;
                 self.ensure_numeric_type(&expr1.r#type, "post-increment operand")?;
                 let ty = expr1.r#type.clone();
@@ -940,8 +930,8 @@ impl SemanticAnalyzer {
                     r#type: ty,
                 }
             }
-            ExprKind::PostDecrement(expr0) => {
-                let expr1 = self.analyze_expr_no_decay(*expr0)?;
+            ExprKind::PostDecrement(expr) => {
+                let expr1 = self.analyze_expr_no_decay(*expr)?;
                 self.ensure_lvalue(&expr1, "post-decrement target")?;
                 self.ensure_numeric_type(&expr1.r#type, "post-decrement operand")?;
                 let ty = expr1.r#type.clone();
@@ -1278,10 +1268,8 @@ impl SemanticAnalyzer {
             return Ok(());
         }
 
-        if from_type.is_pointer() && to_type.is_pointer() {
-            if Self::pointer_types_compatible(&from_type, &to_type) {
-                return Ok(());
-            }
+        if Self::pointer_types_compatible(&from_type, &to_type) {
+            return Ok(());
         }
 
         if (from_type.is_pointer() && to_type.is_integer())
@@ -1340,7 +1328,7 @@ impl SemanticAnalyzer {
     ) -> Result<&'a Type, SemanticError> {
         match ty {
             Type::Pointer(inner) => match inner.as_ref() {
-                Type::Void | Type::FunType(_, _) => Err(SemanticError::PointerSizedBaseRequired(
+                Type::Void | Type::Fn(_, _) => Err(SemanticError::PointerSizedBaseRequired(
                     context,
                     (*inner).as_ref().clone(),
                 )),
@@ -1357,14 +1345,14 @@ impl SemanticAnalyzer {
         match ty {
             Type::Array(inner, _) => Type::Pointer(inner),
             Type::IncompleteArray(inner) => Type::Pointer(inner),
-            Type::FunType(params, ret) => Type::Pointer(Box::new(Type::FunType(params, ret))),
+            Type::Fn(params, ret) => Type::Pointer(Box::new(Type::Fn(params, ret))),
             other => other,
         }
     }
 
     fn size_of_type(&self, ty: &Type) -> Result<u64, SemanticError> {
         match ty {
-            Type::FunType(_, _) => Err(SemanticError::Unsupported(format!(
+            Type::Fn(_, _) => Err(SemanticError::Unsupported(format!(
                 "cannot apply sizeof to function type `{ty}`"
             ))),
             Type::IncompleteArray(_) => Err(SemanticError::Unsupported(format!(
@@ -1381,8 +1369,8 @@ impl SemanticAnalyzer {
         match ty {
             Type::Array(inner, _) => Type::Pointer(inner.clone()),
             Type::IncompleteArray(inner) => Type::Pointer(inner.clone()),
-            Type::FunType(params, ret) => {
-                Type::Pointer(Box::new(Type::FunType(params.clone(), ret.clone())))
+            Type::Fn(params, ret) => {
+                Type::Pointer(Box::new(Type::Fn(params.clone(), ret.clone())))
             }
             other => other.clone(),
         }
@@ -1393,7 +1381,7 @@ impl SemanticAnalyzer {
             expr.r#type = match expr.r#type.clone() {
                 Type::Array(inner, _) => Type::Pointer(inner),
                 Type::IncompleteArray(inner) => Type::Pointer(inner),
-                Type::FunType(params, ret) => Type::Pointer(Box::new(Type::FunType(params, ret))),
+                Type::Fn(params, ret) => Type::Pointer(Box::new(Type::Fn(params, ret))),
                 other => other,
             };
         }
